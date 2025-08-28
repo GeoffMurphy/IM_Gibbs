@@ -29,9 +29,11 @@ def signal_covariance_sampler(s, k):
         Nkvec[i] = len(chunked_k[i])
         assert len(chunked_k[i]) > 2, "The number of modes of the same k must be greater than 2."
         sigmaSq[i] = np.sum(np.abs(chunked_s[i])**2)
-    
-    PkSamples = samplingPk(Nkvec, sigmaSq)
 
+    PkSamples = samplingPk(Nkvec, sigmaSq)
+    Pk_out = sigmaSq
+    #Pk_out = PkSamples
+    
     Pk_chuncked = []
     for i in range(Nmodes):
         Pk_chuncked.append(PkSamples[i] * np.ones(len(chunked_k[i])))
@@ -39,7 +41,7 @@ def signal_covariance_sampler(s, k):
     Pk_sorted = recover_from_chunking(Pk_chuncked)
     Pk = recover_from_sorting(Pk_sorted, sorted_indices)
 
-    return Pk, PkSamples
+    return Pk, Pk_out
 
 
 def samplingPk(Nvec, sigma2vec):
@@ -52,7 +54,8 @@ def samplingPk(Nvec, sigma2vec):
     sigma2vec: vector of parameters.
     """
     assert len(Nvec) == len(sigma2vec)
-    alpha = 0.5 * Nvec - 1
+    alpha = (0.5 * Nvec - 1) # default    
+    
     beta = 0.5 * sigma2vec
     dim = len(Nvec)
     result = []
@@ -128,104 +131,43 @@ def foreground_covariance_sampler(fmat):
     for i in range(Npix):
         fi = fmat[i, :]
         Psi += np.outer(fi, fi)
-
+    
+    """Normalise"""
+    Psi = Psi/Npix
+    
     # Draw a sample from the inverse Wishart distribution
     cov_sample = invwishart.rvs(df=nu, scale=Psi)
     return cov_sample
 
-####################### S Binner #######################
+#############################################################################
 
-def k_vecs(nsamp):
-    """
-    Define the k-vectors for each voxel (from fastbox)
-    """
+""" Binner for the S covariance sampler """
+
+import fastbox
+from fastbox.box import CosmoBox, default_cosmo
+from fastbox.foregrounds import ForegroundModel
+import time, sys
+
+box = CosmoBox(cosmo=default_cosmo, box_scale=(1e3/0.678,1e3/0.678,1e3/0.678), nsamp=128, 
+               redshift=0.39, realise_now=False)
+
+def define_bins(cube,nbins):
+    sig_k, sig_pk_true, sig_stddev, idxs = box.binned_power_spectrum(
+    delta_x=np.fft.fftn(cube,norm='ortho'), nbins=nbins)
+
+    return sig_k, idxs
+
+def bin_it(cube, sig_k, idxs):
+    binned_s = []
+    k_bins = []
+
+    unique_idxs = np.unique(idxs)
     
-    scale_x, scale_y, scale_z = 2e3, 2e3, 2e3
-    #nsamp = 128
-    x = np.linspace(-0.5*scale_x, 0.5*scale_x, nsamp) # in Mpc
-    y = np.linspace(-0.5*scale_y, 0.5*scale_y, nsamp) # in Mpc
-    z = np.linspace(-0.5*scale_z, 0.5*scale_z, nsamp) # in Mpc
+    for gg in range(0,len(unique_idxs)):
+        where = np.where(idxs==unique_idxs[gg])
+        sses = cube.flatten()[where]
+        binned_s.append(sses)
     
-    Lx = x[-1] - x[0]
-    Ly = y[-1] - y[0]
-    Lz = z[-1] - z[0]
-    
-    N = nsamp
-    kmin = 2.*np.pi/np.max([Lx, Ly, Lz])
-    kmax = 2.*np.pi*np.sqrt(3.)*N/np.min([Lx, Ly, Lz])
-    
-    Kx = np.zeros((N,N,N))
-    Ky = np.zeros((N,N,N))
-    Kz = np.zeros((N,N,N))
-    
-    NN = ( N*fft.fftfreq(N, 1.) ).astype("i")
-    
-    for i in NN:
-        Kx[i,:,:] = i
-        Ky[:,i,:] = i
-        Kz[:,:,i] = i
-        
-    #k = 2.*np.pi * np.sqrt(  (Kx/Lx)**2. + (Ky/Ly)**2. + (Kz/Lz)**2.)
+        k_bins.append(np.ones(len(sses)) * sig_k[gg])
 
-    #---------------
-
-    all_k = [] # Find the corresponding |k| for all Fourier modes
-
-    Kx_flat = Kx.flatten()
-    Ky_flat = Ky.flatten()
-    Kz_flat = Kz.flatten()
-        
-    for qq in range(len(Kx.flatten())):
-        all_k.append(np.sqrt(Kx_flat[qq]**2 + Ky_flat[qq]**2 + Kz_flat[qq]**2))
-        
-    return(np.array(all_k))
-
-
-
-####################### Binner #######################
-
-
-def binner(s_flat, nbins, cube_len):
-
-    k = k_vecs(cube_len) # Get the k vectors
-
-    k_min, k_max = min(k.flatten()), max(k.flatten()) # Bin range
-    
-    kbins = np.linspace(k_min, k_max, nbins+1) # Define the bins
-
-    binned_s_out = [] # Groups all the s Fourier modes which fall in the same bin
-
-    k_bins_out = [] # output the k bins corresponding to each individual s
-
-    k_flat = k.flatten()
-
-    idxs_track = [] # Track the indices.
-    
-    for i in range(0,len(kbins)-1):
-
-        # Find the indices of the modes in a particular bin
-        idxs = np.where(np.logical_and(k_flat >= kbins[i], k_flat < kbins[i+1]))
-
-        # Append the modes grouped by the bin they're in
-        binned_s_out.append( s_flat[idxs] )
-        
-        if len(s_flat[idxs]) < 3:
-            print('< 3 modes in a bin')
-            
-        
-        k_bins_out.append( np.zeros(len(s_flat[idxs])) + kbins[i] )
-
-        idxs_track.append(idxs)
-        
-    return binned_s_out, k_bins_out, idxs_track
-
-
-'''def broadcast_S(binned_s_sum, S_len, idxs_track):
-    # Output the full S matrix
-    S = np.ones(S_len) # fix
-
-    for rr in range(0, len(idxs_track)):
-        S[idxs_track[rr]] = binned_s_sum[rr]
-
-    return S'''
-    
+    return binned_s, k_bins
