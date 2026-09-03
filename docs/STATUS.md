@@ -350,9 +350,15 @@ Note also that FastBox's `setup.py` declares `'license': 'MIT'`, even though
 the repository has no LICENSE file — so redistribution would have been
 permitted after all. The dependency is still the cleaner arrangement.
 
-**Open:** `/home/geoff/FastBox` still holds the superseded patch as uncommitted
-changes on `joss-paper`. Nothing depends on it now; discard it or rebase what
-is still wanted onto current `main`.
+`scripts/make_paper_figures.py` from that checkout -- untracked, on no upstream
+branch, and the thing that generates the two JOSS paper figures -- is preserved
+at `GeoffMurphy/FastBox` on `joss-paper` (`50d3b2e`). It was pushed to the fork
+rather than to `philbull/FastBox`, which is a shared branch, though push access
+to upstream does exist.
+
+**Open:** `/home/geoff/FastBox` still holds the superseded non-cubic patch as
+uncommitted changes on `joss-paper`. Nothing depends on it now; discard it or
+rebase what is still wanted onto current `main`.
 
 Notebook outputs stripped — the notebooks ship bare. They had not been
 regenerated against the refactor, so keeping them would have shown output that
