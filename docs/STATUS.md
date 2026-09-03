@@ -317,9 +317,47 @@ No numerics changed: `survey_grid` and `kbins_from_crop` reproduce
   `(70, 45, 500)` when the slice gives 250 channels.
 - MeerKLASS observational cubes removed from the tree and gitignored;
   `imgibbs.data` locates them via `IMGIBBS_DATA`.
+- FastBox is a dependency rather than vendored, pinned to a fork.
 
-Notebook outputs are from the last run before this restructure and have not been
-regenerated.
+### FastBox: the non-cubic patch is obsolete
+
+The local FastBox checkout at `/home/geoff/FastBox` sits on the `joss-paper`
+branch with the non-cubic patch applied on top, and its `origin/main` ref had
+not been fetched since **2022-05-05**. Upstream has moved a long way since:
+
+- **Upstream `main` already supports non-cubic grids.** `CosmoBox` takes
+  `nsamp` as an `int` or a 3-tuple and sets `Nx`/`Ny`/`Nz`, with the same
+  `boxfactor` correction the local patch made.
+- It also fixes non-cubic bugs the patch never touched — `filters.py` was
+  building `ky` from `field.shape[0]` and meshgridding without `indexing='ij'`,
+  so the *vendored* copy is the more broken one on this grid.
+- It adds `meerklass.py`, `power.py`, and a MeerKLASS geometry example.
+- `voids` imports cleanly again, so commenting it out of `__init__.py` is no
+  longer needed.
+
+Verified against this repository on upstream `883677f`: `CosmoBox` with a
+3-tuple `nsamp`, `realise_density`, `lognormal`, `realise_velocity`,
+`redshift_space_density`, `HITracer` and `pca_filter` all run end-to-end, and
+`signal_amplitude()` returns `Tb_mK = 0.15048796349807` — bit-identical to the
+value recorded in `S_starting_point_cropped_meta.json`.
+
+So no patch branch was published. `GeoffMurphy/FastBox` is a plain fork of
+upstream `main`, and exists as a **pin** rather than a patch: the simulated
+P(k) is the truth curve the sampler is judged against, so an upstream change
+should be adopted deliberately. Sync the fork when you want to.
+
+Note also that FastBox's `setup.py` declares `'license': 'MIT'`, even though
+the repository has no LICENSE file — so redistribution would have been
+permitted after all. The dependency is still the cleaner arrangement.
+
+**Open:** `/home/geoff/FastBox` still holds the superseded patch as uncommitted
+changes on `joss-paper`. Nothing depends on it now; discard it or rebase what
+is still wanted onto current `main`.
+
+Notebook outputs stripped — the notebooks ship bare. They had not been
+regenerated against the refactor, so keeping them would have shown output that
+no longer corresponded to the code above it. It also took the three notebooks
+from 2.0 MB to 119 KB.
 
 ### 2026-08-24/25 — binning and comparison fixes
 

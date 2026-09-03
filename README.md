@@ -38,26 +38,24 @@ pip install -e .
 
 ### Installing FastBox
 
-FastBox supplies the simulated H I cubes and the PCA filter. Upstream
-[philbull/FastBox](https://github.com/philbull/FastBox) only supports **cubic**
-grids — `nsamp` must be an `int` — so it fails on this grid with
-
-```
-TypeError: 'tuple' object cannot be interpreted as an integer
-```
-
-Install the fork that accepts a 3-tuple:
+FastBox supplies the simulated H I cubes and the PCA filter.
 
 ```bash
 pip install "git+https://github.com/GeoffMurphy/FastBox.git"
 ```
 
-The patch touches `box.py` (the bulk of it: `nsamp` as a tuple, `boxfactor`,
-`kmax`, `set_fft_sample_spacing`, `realise_velocity`, `freq_array`,
-`pixel_array`), `foregrounds.py` (`C_ell` normalisation and cube allocation),
-`beams.py` (beam array allocation) and `halos.py` (voxel volume and catalogue
-scaling). Cubic behaviour is unchanged: `box.N` is still a plain `int` on a
-cubic grid and only becomes a tuple when the grid is not.
+That is a fork of [philbull/FastBox](https://github.com/philbull/FastBox),
+currently identical to upstream `main` (`883677f`). The fork exists as a pin,
+not a patch: the simulated P(k) is the truth curve the sampler output is
+compared against, so an upstream change should be something you adopt
+deliberately rather than pick up on the next `pip install`. Sync it when you
+want to.
+
+Upstream added non-cubic grid support in 2026 — `nsamp` takes an `int` or a
+3-tuple — along with `indexing='ij'` fixes in `filters.py` and a `meerklass.py`
+module. Verified against this repository: the generation pipeline runs
+end-to-end and `HITracer.signal_amplitude()` reproduces the recorded
+`Tb_mK = 0.15048796349807` bit for bit.
 
 FastBox is only needed to *generate* cubes and to run the PCA benchmark. The
 sampler itself, and `imgibbs.grid`, work without it.

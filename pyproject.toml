@@ -20,9 +20,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# FastBox provides the simulated H I cubes and the PCA filter. The non-cubic
-# grid support the notebooks rely on is not in upstream philbull/FastBox, so
-# this points at the patched fork -- see README, "Installing FastBox".
+# FastBox provides the simulated H I cubes and the PCA filter. Upstream added
+# non-cubic grid support in 2026; this pins a fork of it so an upstream change
+# cannot silently move the simulated truth curve. See README, "Installing
+# FastBox".
 sim = ["fastbox @ git+https://github.com/GeoffMurphy/FastBox.git"]
 notebooks = ["jupyter", "ipywidgets"]
 

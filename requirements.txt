@@ -6,9 +6,9 @@ astropy
 tqdm
 pyccl>=3.0
 
-# Simulated H I cubes and the PCA filter. Upstream philbull/FastBox only
-# supports cubic grids; this fork adds the non-cubic support the notebooks
-# need. See README, "Installing FastBox".
+# Simulated H I cubes and the PCA filter. A fork of philbull/FastBox, pinned so
+# an upstream change cannot silently move the simulated truth curve.
+# See README, "Installing FastBox".
 git+https://github.com/GeoffMurphy/FastBox.git#egg=fastbox
 
 # Notebooks only
