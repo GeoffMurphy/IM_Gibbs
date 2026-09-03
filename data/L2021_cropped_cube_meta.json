@@ -1,0 +1,42 @@
+{
+  "source": "L2021_polished_cube.npy",
+  "fits_source": "Nscan961_Tsky_cube_p0.3d_sigma4.0_iter2.fits",
+  "fits_channels": [
+    550,
+    1050
+  ],
+  "crop": {
+    "x": [
+      33,
+      103
+    ],
+    "y": [
+      14,
+      59
+    ],
+    "z": [
+      0,
+      500
+    ]
+  },
+  "shape": [
+    70,
+    45,
+    500
+  ],
+  "pixel_deg": 0.3,
+  "box_dims": [
+    558.4,
+    359.0,
+    494.7
+  ],
+  "z_range": [
+    0.321,
+    0.4629
+  ],
+  "z_mid": 0.392,
+  "freq_MHz": [
+    970.941,
+    1075.225
+  ]
+}

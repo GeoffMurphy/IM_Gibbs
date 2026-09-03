@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "imgibbs"
+version = "2.0.0.dev0"
+description = "Bayesian component separation and power spectrum estimation for 21cm intensity mapping data cubes"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "Geoff Murphy" }]
+dependencies = [
+    "numpy>=1.24",
+    "scipy>=1.11",
+    "matplotlib",
+    "astropy",
+    "tqdm",
+    "pyccl>=3.0",
+]
+
+[project.optional-dependencies]
+# FastBox provides the simulated H I cubes and the PCA filter. The non-cubic
+# grid support the notebooks rely on is not in upstream philbull/FastBox, so
+# this points at the patched fork -- see README, "Installing FastBox".
+sim = ["fastbox @ git+https://github.com/GeoffMurphy/FastBox.git"]
+notebooks = ["jupyter", "ipywidgets"]
+
+[project.urls]
+Homepage = "https://github.com/GeoffMurphy/IM_Gibbs"
+
+[tool.setuptools.packages.find]
+include = ["imgibbs*"]

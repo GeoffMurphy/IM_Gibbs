@@ -1,0 +1,38 @@
+# ---- Sampler output -------------------------------------------------------
+# A 500-sample run writes ~27 GB of traces. Never commit these.
+outputs/
+samples/
+logs/
+*.out
+*.err
+
+# ---- Data not redistributed here ------------------------------------------
+# MeerKLASS L2021 observational cubes. These are collaboration data and are
+# deliberately NOT in this repository -- see README, "Data".
+L2021_polished_cube.npy
+L2021_cropped_cube.npy
+LP_*.npy
+data/L2021_*.npy
+data/LP_*.npy
+
+# Retired 72^3-grid products, superseded by the *_cropped versions.
+S_starting_point.npy
+
+# ---- Notebook / editor cruft ----------------------------------------------
+.ipynb_checkpoints/
+*.ipynb.bak
+*.ipynb.bak.*
+*-checkpoint.py
+*.7z
+*.zip
+*:Zone.Identifier
+
+# ---- Python ---------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.venv/
+venv/

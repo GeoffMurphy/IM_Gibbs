@@ -1,0 +1,16 @@
+# Core dependencies. Install the package itself with `pip install -e .`
+numpy>=1.24
+scipy>=1.11
+matplotlib
+astropy
+tqdm
+pyccl>=3.0
+
+# Simulated H I cubes and the PCA filter. Upstream philbull/FastBox only
+# supports cubic grids; this fork adds the non-cubic support the notebooks
+# need. See README, "Installing FastBox".
+git+https://github.com/GeoffMurphy/FastBox.git#egg=fastbox
+
+# Notebooks only
+jupyter
+ipywidgets
