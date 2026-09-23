@@ -23,9 +23,11 @@ import numpy as np
 import pytest
 
 from imgibbs import (
-    SystematicBasis, construct_A, construct_b, construct_preconditioner,
-    groundspill_basis, groundspill_cube, period_scan, ripple_wavenumber,
-    scan_templates, spectral_templates, spillover_envelope,
+    RM_DEFAULT, SystematicBasis, best_fit_amplitudes, construct_A, construct_b,
+    construct_preconditioner, faraday_templates, groundspill_basis,
+    groundspill_cube, lambda_squared, leakage_basis, onef_basis,
+    onef_covariance, period_scan, poly2d_templates, realise,
+    ripple_wavenumber, scan_templates, spectral_templates, spillover_envelope,
 )
 
 # A small grid, so the dense-matrix tests below are cheap. The band is
@@ -429,3 +431,145 @@ def test_least_squares_recovers_an_injected_ripple():
 
     err = np.abs(g_hat - truth['g_true']).max() / np.abs(truth['g_true']).max()
     assert err < 0.05, f'g recovered to {err:.3f}, expected <5%'
+
+
+# ---------------------------------------------------------------------------
+# Polarisation leakage
+# ---------------------------------------------------------------------------
+
+def test_galactic_rm_is_invisible_on_this_band():
+    """The result that shapes the leakage model.
+
+    The band spans lambda^2 = 0.0859-0.0953 m^2, so a Faraday depth of tens of
+    rad/m^2 -- which is what the Galaxy actually supplies at these latitudes --
+    turns through well under one cycle. It is smooth, the foreground absorbs
+    all of it, and modelling it would add a null direction to Ug.
+    """
+    fg6 = legendre_basis(len(REAL_FREQS), 6)
+    for rm in (10.0, 100.0, 300.0):
+        tmpl = faraday_templates(REAL_FREQS, rm=rm)
+        tmpl = tmpl / np.linalg.norm(tmpl, axis=1)[:, None]
+        absorbed = np.mean(np.sum((fg6 @ tmpl.T) ** 2, axis=0))
+        assert absorbed > 0.999, f'RM={rm}: {absorbed}'
+
+
+def test_high_rm_leakage_survives():
+    fg6 = legendre_basis(len(REAL_FREQS), 6)
+    got = {}
+    for rm in (500.0, 1000.0, 2000.0):
+        tmpl = faraday_templates(REAL_FREQS, rm=rm)
+        tmpl = tmpl / np.linalg.norm(tmpl, axis=1)[:, None]
+        got[rm] = float(np.mean(np.sum((fg6 @ tmpl.T) ** 2, axis=0)))
+    assert got[500.0] > 0.95            # still nearly all absorbed
+    assert 0.1 < got[1000.0] < 0.3      # comparable to a 17.5 MHz ripple
+    assert got[2000.0] < 0.1
+    assert got[500.0] > got[1000.0] > got[2000.0]
+
+
+def test_leakage_is_a_chirp_not_a_single_mode():
+    """Periodic in lambda^2, so the local frequency period drifts as nu^3.
+
+    That is the substantive difference from a ground-spill ripple: the power
+    spreads over a range of k_parallel instead of landing in one bin, so it
+    cannot be dealt with by excising a single bin.
+    """
+    l2 = lambda_squared(REAL_FREQS)
+    # Local period in MHz at each end, from the phase gradient.
+    grad = np.gradient(2 * RM_DEFAULT * l2, REAL_FREQS)
+    period_lo, period_hi = 2 * np.pi / np.abs(grad[0]), 2 * np.pi / np.abs(grad[-1])
+    ratio = period_hi / period_lo
+    assert np.isclose(ratio, (REAL_FREQS[-1] / REAL_FREQS[0]) ** 3, rtol=1e-3)
+    assert ratio > 1.15
+
+
+def test_leakage_basis_uses_2d_spatial_structure():
+    """Leakage follows the beam, which has no reason to align with the scan."""
+    b = leakage_basis(FREQS, SHAPE, rm=RM_DEFAULT, order=1)
+    assert b.n_s == 3 and b.n_t == 2 and b.n_params == 6
+
+    # Order-agnostic: at order 1 there must be exactly one constant term and
+    # one gradient along each axis, whatever sequence poly2d_templates emits
+    # them in.
+    maps = [r.reshape(SHAPE[0], SHAPE[1]) for r in b.spatial]
+    kinds = []
+    for m in maps:
+        varies_0 = np.ptp(m, axis=0).max() > 1e-12   # varies along axis 1
+        varies_1 = np.ptp(m, axis=1).max() > 1e-12   # varies along axis 0
+        kinds.append((varies_1, varies_0))
+    assert sorted(kinds) == [(False, False), (False, True), (True, False)]
+
+
+def test_poly2d_term_count():
+    for order, n in ((0, 1), (1, 3), (2, 6)):
+        assert poly2d_templates(SHAPE, order=order).shape[0] == n
+
+
+# ---------------------------------------------------------------------------
+# 1/f
+# ---------------------------------------------------------------------------
+
+def test_onef_covariance_is_symmetric_and_psd():
+    cov = onef_covariance(48, alpha=1.0, knee_cycles=1.0)
+    assert np.allclose(cov, cov.T, atol=1e-12)
+    assert np.linalg.eigvalsh(cov).min() > -1e-10
+
+
+def test_onef_power_grows_toward_large_scales():
+    """It is 1/f: more variance on long scales than short ones. If this fails
+    the sign of alpha is wrong somewhere and the process is blue, not red."""
+    steep = onef_covariance(64, alpha=2.0, knee_cycles=4.0)
+    vals = np.linalg.eigvalsh(steep)[::-1]
+    assert vals[0] / vals[-1] > 50
+
+
+def test_onef_basis_deflates_the_foreground():
+    """The 1/f common mode is constant in frequency, so it is inside the
+    foreground span to machine precision -- the same statement as for smooth
+    ground spill. Deflating means the block carries only what is left."""
+    fg = legendre_basis(SHAPE[2], N_MODES)
+    basis, _ = onef_basis(FREQS, SHAPE, n_scan=2, n_spec=3, fg_basis=fg)
+    leak = np.abs(fg @ basis.spectral.T).max()
+    assert leak < 1e-8, f'spectral modes still overlap the foreground: {leak}'
+
+    # Without deflation they do overlap, which is the point of the option.
+    plain, _ = onef_basis(FREQS, SHAPE, n_scan=2, n_spec=3, fg_basis=None)
+    assert np.abs(fg @ plain.spectral.T).max() > 1e-3
+
+
+def test_onef_prior_variance_comes_from_the_eigenvalues():
+    """Unlike ground spill, G here has a derivation rather than a guess: the
+    KL eigenvalues ARE the prior variances."""
+    fg = legendre_basis(SHAPE[2], N_MODES)
+    basis, prior = onef_basis(FREQS, SHAPE, n_scan=3, n_spec=2, fg_basis=fg)
+    assert prior.shape == basis.g_shape
+    assert np.isclose(prior.sum(), 1.0)
+    assert np.all(prior > 0)
+    # Ordered: the leading mode carries the most variance in each direction.
+    assert prior[0, 0] == prior.max()
+    assert np.all(np.diff(prior[:, 0]) <= 1e-12)
+
+
+def test_realise_and_recover_amplitudes():
+    """A drawn realisation is exactly representable, so the least-squares
+    amplitudes must return what was drawn."""
+    fg = legendre_basis(SHAPE[2], N_MODES)
+    basis, prior = onef_basis(FREQS, SHAPE, n_scan=2, n_spec=2, fg_basis=fg)
+    cube, g_true = realise(basis, prior, rms=1e-3,
+                           rng=np.random.default_rng(11))
+    assert np.isclose(cube.std(), 1e-3, rtol=1e-10)
+    assert np.allclose(best_fit_amplitudes(basis, cube), g_true, rtol=1e-8)
+
+
+def test_best_fit_amplitudes_on_something_outside_the_basis():
+    """A cube the basis cannot represent still gets its best projection, not
+    an error -- that is what a 1/f recovery has to be scored against."""
+    fg = legendre_basis(SHAPE[2], N_MODES)
+    basis, _ = onef_basis(FREQS, SHAPE, n_scan=2, n_spec=2, fg_basis=fg)
+    rng = np.random.default_rng(12)
+    noise = rng.normal(size=SHAPE)
+    g = best_fit_amplitudes(basis, noise)
+    assert g.shape == basis.g_shape and np.all(np.isfinite(g))
+    # The residual must be orthogonal to every basis vector: that is the
+    # defining property of a least-squares fit.
+    resid = noise.ravel() - basis.apply(g)
+    assert np.abs(basis.adjoint(resid)).max() < 1e-8 * np.abs(g).max() + 1e-10

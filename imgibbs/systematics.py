@@ -468,3 +468,291 @@ def groundspill_cube(freqs, shape, ripple_rms, spill_level=0.0,
         cube = cube + smooth_cube * (spill_level / smooth_cube.std())
 
     return cube, {'basis': basis, 'g_true': g_true}
+
+
+# ---------------------------------------------------------------------------
+# Spatial patterns that are not tied to the scan direction
+# ---------------------------------------------------------------------------
+
+def poly2d_templates(shape, order=1):
+    """Low-order 2D polynomial patterns across the map, unit RMS each.
+
+    For a systematic whose spatial structure follows the *beam* rather than
+    the scan — polarisation leakage, principally — the scan direction is not
+    special, so :func:`scan_templates` is the wrong shape. This gives the
+    separable Legendre products up to total degree ``order``: ``order=1`` is
+    {1, x, y} and ``order=2`` adds {x^2, xy, y^2}.
+
+    Returns
+    -------
+    array, shape ``(n_terms, Nx * Ny)`` with
+    ``n_terms = (order + 1)(order + 2) / 2``.
+    """
+    nx, ny = shape[0], shape[1]
+    vx = np.polynomial.legendre.legvander(np.linspace(-1, 1, nx), int(order)).T
+    vy = np.polynomial.legendre.legvander(np.linspace(-1, 1, ny), int(order)).T
+
+    rows = []
+    for i in range(int(order) + 1):
+        for j in range(int(order) + 1 - i):
+            rows.append(np.outer(vx[i], vy[j]).ravel())
+
+    out = np.array(rows)
+    return out / np.sqrt(np.mean(out ** 2, axis=1))[:, None]
+
+
+# ---------------------------------------------------------------------------
+# Polarisation leakage
+# ---------------------------------------------------------------------------
+
+#: Speed of light in m MHz, so ``C_M_MHZ / nu_MHz`` is a wavelength in metres.
+C_M_MHZ = 299.792458
+
+#: Default Faraday depth, rad m^-2. Deliberately large -- see
+#: :func:`faraday_templates` for why anything Galactic is invisible here.
+RM_DEFAULT = 1000.0
+
+
+def lambda_squared(freqs):
+    """``lambda^2`` in m^2 for frequencies in MHz."""
+    return (C_M_MHZ / np.asarray(freqs, dtype=float)) ** 2
+
+
+def faraday_templates(freqs, rm=RM_DEFAULT, n_rm=1, rm_step=None):
+    """Polarisation-leakage templates: quadratures in ``lambda^2``, unit RMS.
+
+    Polarised synchrotron is Faraday-rotated, so what leaks into total
+    intensity oscillates as ``cos(2 chi_0 + 2 RM lambda^2)``. As with ground
+    spill the two quadratures are carried separately, which makes the
+    polarisation angle ``chi_0`` a *linear* parameter; ``RM`` is nonlinear and
+    is fixed.
+
+    **On this band, ordinary Galactic RM is invisible.** The band spans
+    ``lambda^2 = 0.0859-0.0953 m^2``, a range of 0.0095, so the number of
+    cycles is ``RM * 0.0095 / pi``. Measured against the 6-mode Legendre
+    foreground basis:
+
+    =====================  ========  ==================
+    RM (rad m^-2)          cycles    absorbed by the FG
+    =====================  ========  ==================
+    10                     0.03      1.000
+    100                    0.30      1.000
+    300                    0.90      1.000
+    500                    1.50      0.976
+    1000                   3.01      0.186
+    2000                   6.02      0.047
+    =====================  ========  ==================
+
+    Typical Galactic Faraday depths are tens of rad m^-2, so leakage from them
+    is smooth across 52 MHz and the foreground block absorbs it completely --
+    exactly like the smooth part of ground spill, and harmless for the same
+    reason. Only high-RM structure, ``RM >~ 500``, is identifiable at all.
+    Widening the band is what buys you sensitivity to lower RM.
+
+    Unlike a ground-spill ripple this is **not** a single ``k_parallel`` mode.
+    The oscillation is periodic in ``lambda^2``, so its local frequency period
+    scales as ``nu^3`` and drifts by 17% across this band. The power spreads
+    over a range of ``k`` rather than landing in one bin.
+
+    Parameters
+    ----------
+    freqs : array, MHz
+    rm : float
+        Faraday depth, rad m^-2.
+    n_rm : int
+        Number of Faraday components. With ``rm_step`` they are spaced
+        ``rm, rm + rm_step, ...`` -- a crude Faraday spectrum.
+    rm_step : float, optional
+        Spacing between components. Defaults to ``rm / n_rm``.
+
+    Returns
+    -------
+    array, shape ``(2 * n_rm, n_freq)``
+    """
+    l2 = lambda_squared(freqs)
+    if rm_step is None:
+        rm_step = rm / max(int(n_rm), 1)
+
+    rows = []
+    for m in range(int(n_rm)):
+        phase = 2.0 * (rm + m * rm_step) * l2
+        rows.append(np.cos(phase))
+        rows.append(np.sin(phase))
+
+    out = np.array(rows)
+    # Remove the mean: a constant is in the foreground span by construction,
+    # so leaving it in would put a null direction in Ug.
+    out = out - out.mean(axis=1)[:, None]
+    return out / np.sqrt(np.mean(out ** 2, axis=1))[:, None]
+
+
+def leakage_basis(freqs, shape, rm=RM_DEFAULT, n_rm=1, rm_step=None, order=1):
+    """Polarisation-leakage :class:`SystematicBasis`.
+
+    Spatially this uses :func:`poly2d_templates`, not the scan-direction
+    polynomial: leakage is set by the beam's polarisation response, which has
+    no reason to align with the scan. Default is {1, x, y} x {cos, sin} at one
+    Faraday depth — six parameters.
+    """
+    return SystematicBasis(
+        spatial=poly2d_templates(shape, order=order),
+        spectral=faraday_templates(freqs, rm=rm, n_rm=n_rm, rm_step=rm_step),
+        shape=tuple(int(n) for n in shape),
+    )
+
+
+# ---------------------------------------------------------------------------
+# 1/f noise
+# ---------------------------------------------------------------------------
+
+def onef_covariance(n, alpha=1.0, knee_cycles=1.0, drop_dc=True):
+    """Covariance of a ``1/f`` process on ``n`` regularly spaced samples.
+
+    Built from the power spectrum ``P(k) = 1 + (knee_cycles / k)^alpha``,
+    where ``k`` counts cycles across the whole span. ``knee_cycles = 1`` puts
+    the knee at one cycle across the scan: 1/f dominates on scales longer than
+    the scan, white noise below.
+
+    ``drop_dc`` removes the ``k = 0`` mode, which diverges and which carries no
+    information the sampler can use anyway — a constant offset is degenerate
+    with the foreground.
+    """
+    k = np.arange(n)
+    psd = np.zeros(n)
+    nz = k > 0
+    psd[nz] = 1.0 + (knee_cycles / k[nz]) ** alpha
+    if not drop_dc:
+        psd[0] = psd[nz][0]
+    # Real, symmetric PSD -> stationary covariance by inverse transform.
+    acf = np.fft.irfft(np.r_[psd[:n // 2 + 1]], n=n)
+    return np.array([np.roll(acf, i) for i in range(n)])
+
+
+def _kl_modes(cov, n_keep, deflate=None):
+    """Top ``n_keep`` Karhunen-Loeve modes of ``cov``, unit RMS, + eigenvalues.
+
+    ``deflate`` is an orthonormal basis to project out first. Passing the
+    foreground basis means the retained modes are orthogonal to it by
+    construction, so the block carries only the part of the process the
+    foreground cannot absorb -- the lesson from ground spill, applied before
+    the fact rather than after.
+    """
+    if deflate is not None:
+        P = np.eye(cov.shape[0]) - deflate.T @ deflate
+        cov = P @ cov @ P
+    vals, vecs = np.linalg.eigh(cov)
+    order = np.argsort(vals)[::-1][:int(n_keep)]
+    vals, vecs = vals[order], vecs[:, order].T
+    vecs = vecs / np.sqrt(np.mean(vecs ** 2, axis=1))[:, None]
+    return vecs, np.maximum(vals, 0.0)
+
+
+def onef_basis(freqs, shape, alpha=1.0, beta=1.0, knee_cycles=1.0,
+               n_scan=2, n_spec=2, scan_axis=0, fg_basis=None):
+    """A ``1/f`` :class:`SystematicBasis`, from a truncated KL decomposition.
+
+    1/f is a stochastic process, not a fixed template, so it does not have a
+    natural low-rank basis the way a standing wave does. What it does have is
+    a covariance, and the leading Karhunen-Loeve modes of that covariance are
+    the directions carrying most of its variance. Truncating there gives a
+    basis in exactly the form this module already uses -- **and it gives ``G``
+    a real derivation for once**, since the eigenvalues are the prior
+    variances rather than a guess (compare ground spill, where ``G`` has to
+    come from instrument characterisation).
+
+    The process is taken separable, ``C = C_scan (x) C_freq``: 1/f in time
+    along the scan direction with index ``alpha``, and correlated across
+    frequency with index ``beta``.
+
+    **The common mode is excluded.** A gain fluctuation that moves every
+    channel together is constant in frequency and therefore inside the
+    foreground span to machine precision -- the same statement as for smooth
+    ground spill. Passing ``fg_basis`` deflates it, and anything else the
+    foreground can absorb, out of the frequency covariance before the modes
+    are taken.
+
+    Parameters
+    ----------
+    freqs : array, MHz. Used only for its length.
+    shape : tuple (Nx, Ny, Nz)
+    alpha : float
+        1/f index along the scan.
+    beta : float
+        Index of the correlation across frequency. Larger means smoother in
+        frequency, hence more of it inside the foreground span.
+    knee_cycles : float
+        Knee position, in cycles across the scan.
+    n_scan, n_spec : int
+        KL modes kept in each direction. The basis has ``n_scan * n_spec``
+        parameters.
+    scan_axis : {0, 1}
+    fg_basis : array (n_modes, n_freq), optional
+        Orthonormal foreground basis to deflate out of the frequency
+        covariance. **Strongly recommended.**
+
+    Returns
+    -------
+    basis : SystematicBasis
+    prior_var : array, shape ``(n_scan, n_spec)``
+        Relative prior variances from the KL eigenvalues, normalised to sum to
+        1. Scale by the expected total variance to get ``G``.
+    """
+    if scan_axis not in (0, 1):
+        raise ValueError(f'scan_axis must be 0 or 1, got {scan_axis}')
+    nx, ny, nz = shape
+    n_along = (nx, ny)[scan_axis]
+
+    scan_vecs, scan_vals = _kl_modes(
+        onef_covariance(n_along, alpha=alpha, knee_cycles=knee_cycles), n_scan)
+    spec_vecs, spec_vals = _kl_modes(
+        onef_covariance(nz, alpha=beta, knee_cycles=knee_cycles), n_spec,
+        deflate=fg_basis)
+
+    # Lift the 1D scan modes onto the 2D map: constant across the other axis,
+    # because the process varies with time and time maps onto the scan.
+    rows = []
+    for vec in scan_vecs:
+        pattern = (np.repeat(vec[:, None], ny, axis=1) if scan_axis == 0
+                   else np.repeat(vec[None, :], nx, axis=0))
+        rows.append(pattern.ravel())
+    spatial = np.array(rows)
+    spatial = spatial / np.sqrt(np.mean(spatial ** 2, axis=1))[:, None]
+
+    basis = SystematicBasis(spatial=spatial, spectral=spec_vecs,
+                            shape=tuple(int(n) for n in shape))
+    prior_var = np.outer(scan_vals, spec_vals)
+    total = prior_var.sum()
+    return basis, prior_var / (total if total > 0 else 1.0)
+
+
+# ---------------------------------------------------------------------------
+# Injection, for any basis
+# ---------------------------------------------------------------------------
+
+def best_fit_amplitudes(basis, cube):
+    """Least-squares amplitudes of ``cube`` within ``basis``.
+
+    For a systematic that is not exactly representable in the basis -- a 1/f
+    realisation, say -- this is the best the block could possibly do. Scoring
+    recovery against the injected *process* instead would charge the sampler
+    for the truncation, which is a modelling choice, not a sampling failure.
+    """
+    rhs = basis.adjoint(np.asarray(cube).ravel()).ravel()
+    return np.linalg.solve(basis.gram(), rhs).reshape(basis.g_shape)
+
+
+def realise(basis, prior_var, rms, rng=None):
+    """Draw a random cube from ``basis`` with the given relative variances.
+
+    Used to inject a 1/f realisation: the amplitudes are drawn from the KL
+    eigenvalues rather than set by hand, so the injected field has the
+    covariance the model claims it has.
+
+    Returns ``(cube, g_true)``, scaled so the cube has RMS ``rms``.
+    """
+    rng = np.random.default_rng() if rng is None else rng
+    g = rng.normal(size=basis.g_shape) * np.sqrt(
+        np.asarray(prior_var).reshape(basis.g_shape))
+    cube = basis.cube(g)
+    scale = rms / cube.std()
+    return cube * scale, g * scale

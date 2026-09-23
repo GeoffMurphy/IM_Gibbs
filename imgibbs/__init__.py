@@ -22,8 +22,10 @@ from .kbins import (
     power_spectrum,
 )
 from .systematics import (
-    ENVELOPE_INDEX, RIPPLE_PERIOD_MHZ, T_GROUND, SystematicBasis,
-    groundspill_basis, groundspill_cube, period_scan, ripple_wavenumber,
+    C_M_MHZ, ENVELOPE_INDEX, RIPPLE_PERIOD_MHZ, RM_DEFAULT, T_GROUND,
+    SystematicBasis, best_fit_amplitudes, faraday_templates, groundspill_basis,
+    groundspill_cube, lambda_squared, leakage_basis, onef_basis,
+    onef_covariance, period_scan, poly2d_templates, realise, ripple_wavenumber,
     scan_templates, spectral_templates, spillover_envelope,
 )
 from .linear_system import (
@@ -49,4 +51,7 @@ __all__ = [
     'spectral_templates', 'scan_templates', 'spillover_envelope',
     'ripple_wavenumber', 'period_scan',
     'T_GROUND', 'RIPPLE_PERIOD_MHZ', 'ENVELOPE_INDEX',
+    'leakage_basis', 'faraday_templates', 'lambda_squared', 'poly2d_templates',
+    'onef_basis', 'onef_covariance', 'best_fit_amplitudes', 'realise',
+    'RM_DEFAULT', 'C_M_MHZ',
 ]
