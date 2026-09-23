@@ -21,6 +21,11 @@ from .kbins import (
     make_kbins,
     power_spectrum,
 )
+from .systematics import (
+    ENVELOPE_INDEX, RIPPLE_PERIOD_MHZ, T_GROUND, SystematicBasis,
+    groundspill_basis, groundspill_cube, period_scan, ripple_wavenumber,
+    scan_templates, spectral_templates, spillover_envelope,
+)
 from .linear_system import (
     Uf,
     Us,
@@ -40,4 +45,8 @@ __all__ = [
     'Us', 'Uf', 'construct_Uf', 'construct_A', 'construct_b',
     'construct_preconditioner',
     'signal_covariance_sampler', 'foreground_covariance_sampler',
+    'SystematicBasis', 'groundspill_basis', 'groundspill_cube',
+    'spectral_templates', 'scan_templates', 'spillover_envelope',
+    'ripple_wavenumber', 'period_scan',
+    'T_GROUND', 'RIPPLE_PERIOD_MHZ', 'ENVELOPE_INDEX',
 ]
