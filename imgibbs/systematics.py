@@ -549,10 +549,18 @@ def faraday_templates(freqs, rm=RM_DEFAULT, n_rm=1, rm_step=None):
     reason. Only high-RM structure, ``RM >~ 500``, is identifiable at all.
     Widening the band is what buys you sensitivity to lower RM.
 
-    Unlike a ground-spill ripple this is **not** a single ``k_parallel`` mode.
     The oscillation is periodic in ``lambda^2``, so its local frequency period
-    scales as ``nu^3`` and drifts by 17% across this band. The power spreads
-    over a range of ``k`` rather than landing in one bin.
+    scales as ``nu^3``: it is a chirp, not a pure tone, and the period drifts
+    by 17% across this band.
+
+    **On this band that chirp is unresolved, and the distinction is academic.**
+    The ``k_parallel`` modes are spaced ``2*pi/Lz = 0.0247 Mpc^-1``, which at
+    ``k ~ 0.074`` is 33%. A 17% drift does not resolve: 98.5% of the power sits
+    within 10% of the peak, against 99.8% for a fixed-period ripple. At 52 MHz
+    leakage is indistinguishable from ground spill in ``k`` alone -- both are
+    effectively single modes, and both land wholly in bin 0 of the sampler's
+    binning. Telling them apart is what the model is for. On a wider band the
+    chirp does resolve, which is one more argument for the 500-channel cut.
 
     Parameters
     ----------

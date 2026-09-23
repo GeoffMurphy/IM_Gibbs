@@ -466,12 +466,14 @@ def test_high_rm_leakage_survives():
     assert got[500.0] > got[1000.0] > got[2000.0]
 
 
-def test_leakage_is_a_chirp_not_a_single_mode():
+def test_leakage_chirps_but_the_chirp_is_unresolved_here():
     """Periodic in lambda^2, so the local frequency period drifts as nu^3.
 
-    That is the substantive difference from a ground-spill ripple: the power
-    spreads over a range of k_parallel instead of landing in one bin, so it
-    cannot be dealt with by excising a single bin.
+    The drift is real -- 17% across this band -- but it is NOT enough to
+    spread the power in k. The k_parallel spacing is 2*pi/Lz = 0.0247, which
+    at k ~ 0.074 is 33%, so a 17% drift falls inside one mode. An earlier
+    version of this test's name claimed leakage was "not a single mode"; on a
+    52 MHz band it effectively is. The chirp only resolves on a wider band.
     """
     l2 = lambda_squared(REAL_FREQS)
     # Local period in MHz at each end, from the phase gradient.
@@ -480,6 +482,11 @@ def test_leakage_is_a_chirp_not_a_single_mode():
     ratio = period_hi / period_lo
     assert np.isclose(ratio, (REAL_FREQS[-1] / REAL_FREQS[0]) ** 3, rtol=1e-3)
     assert ratio > 1.15
+
+    # ... and it is smaller than the k_parallel spacing, so it does not spread.
+    k_spacing = 2 * np.pi / REAL_LZ
+    k_ripple = ripple_wavenumber(17.5, REAL_FREQS[-1] - REAL_FREQS[0], REAL_LZ)
+    assert (ratio - 1.0) < k_spacing / k_ripple
 
 
 def test_leakage_basis_uses_2d_spatial_structure():

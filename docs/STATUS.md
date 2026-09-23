@@ -331,11 +331,22 @@ smooth ground spill and harmless for the same reason. Only `RM >~ 500` is
 identifiable. Widening the band is what buys sensitivity to lower RM; this is
 an argument for the 500-channel cut if leakage ever matters.
 
-Unlike a ripple it is **not a single `k_parallel` mode**. Periodic in
-`lambda^2`, its local frequency period goes as `nu^3` and drifts 17% across
-the band, so its power spreads over a range of `k` and cannot be dealt with by
-excising one bin. Spatially it uses a 2D polynomial, not the scan-direction
-one: leakage follows the beam's polarisation response.
+Being periodic in `lambda^2` it is a chirp: the local frequency period goes as
+`nu^3` and drifts 17% across the band. **On this band that does not spread it.**
+The `k_parallel` spacing is `2*pi/Lz = 0.0247`, i.e. 33% at `k ~ 0.074`, so a
+17% drift falls inside one mode — 98.5% of the power sits within 10% of the
+peak, against 99.8% for a fixed-period ripple, and both land wholly in bin 0.
+At 52 MHz leakage and ground spill are indistinguishable from the binned P(k)
+alone; separating them is what the model is for. The chirp resolves on a wider
+band, which is one more argument for the 500-channel cut.
+
+(An earlier draft of this section claimed the power "spreads over a range of k
+and cannot be dealt with by excising one bin". That is what the chirp would do
+given enough bandwidth; it is not what it does here. Measured in
+`notebooks/4_systematics.ipynb` §9.)
+
+Spatially it uses a 2D polynomial, not the scan-direction one: leakage follows
+the beam's polarisation response.
 
 **1/f.** A stochastic process, so it has no natural low-rank basis — but it
 has a covariance, and the leading Karhunen-Loeve modes of that covariance are
