@@ -99,11 +99,21 @@ def test_kbins_reproduce_the_recorded_run(recorded):
     sig_k, idxs, meta = kbins_from_crop(cube, grid.box_dims, max_bins=5,
                                         verbose=False)
 
+    # The DISCRETE results are what correctness depends on -- which mode
+    # lands in which bin -- so those stay exact.
     assert meta['n_k_bins'] == recorded['n_k_bins']
     assert meta['modes_per_bin'] == recorded['kbin_modes_per_bin']
-    assert meta['k_min'] == recorded['kbin_k_min']
-    assert meta['k_max'] == recorded['kbin_k_max']
-    assert np.array_equal(sig_k, recorded['kbin_sig_k'])
+
+    # The float bin edges get a tight tolerance rather than ==. Verified
+    # 2026-09-23 across pyccl 3.3.0 (laptop) and 3.3.6 (ilifu): box_dims is
+    # bit-identical, the per-voxel bin assignment `idxs` is bit-identical
+    # (md5 63b43f2c09533c439f090da11c5a768b on both), and k_min differs only
+    # in the last ULP -- 0.044702979009669463 vs ...443. Requiring == here
+    # fails on a machine that is in fact reproducing the run exactly, which
+    # trains people to ignore this test.
+    assert np.isclose(meta['k_min'], recorded['kbin_k_min'], rtol=1e-12, atol=0)
+    assert np.isclose(meta['k_max'], recorded['kbin_k_max'], rtol=1e-12, atol=0)
+    assert np.allclose(sig_k, recorded['kbin_sig_k'], rtol=1e-12, atol=0)
 
 
 def test_kbins_every_bin_clears_min_modes():
@@ -191,7 +201,14 @@ def test_power_spectrum_mask_uses_valid_voxels_only():
     """Subtracting a whole-cube mean would stamp the footprint into the field
     and dump spurious power at low k."""
     rng = np.random.default_rng(1)
-    shape, box = (24, 24, 24), (100.0, 100.0, 100.0)
+    # A deliberately NON-cubic box. On a cubic grid many modes share exactly
+    # the same |k|, so a whole shell of them sits on a bin edge and tie-breaks
+    # by floating-point luck: numpy 2.4 (laptop) and 2.5 (ilifu) put 6 of them
+    # on opposite sides, which moved bin 0 from 1 voxel to 7 and broke this
+    # test on one machine only. The production grid is non-cubic and does not
+    # have the ties -- `idxs` is bit-identical across both -- so this is a
+    # property of the toy grid, not of the binner.
+    shape, box = (24, 24, 24), (100.0, 83.0, 61.0)
     cube = rng.normal(5.0, 0.3, shape)            # large offset
     mask = np.zeros(shape, dtype=bool)
     mask[:12] = True
