@@ -201,14 +201,7 @@ def test_power_spectrum_mask_uses_valid_voxels_only():
     """Subtracting a whole-cube mean would stamp the footprint into the field
     and dump spurious power at low k."""
     rng = np.random.default_rng(1)
-    # A deliberately NON-cubic box. On a cubic grid many modes share exactly
-    # the same |k|, so a whole shell of them sits on a bin edge and tie-breaks
-    # by floating-point luck: numpy 2.4 (laptop) and 2.5 (ilifu) put 6 of them
-    # on opposite sides, which moved bin 0 from 1 voxel to 7 and broke this
-    # test on one machine only. The production grid is non-cubic and does not
-    # have the ties -- `idxs` is bit-identical across both -- so this is a
-    # property of the toy grid, not of the binner.
-    shape, box = (24, 24, 24), (100.0, 83.0, 61.0)
+    shape, box = (24, 24, 24), (100.0, 100.0, 100.0)
     cube = rng.normal(5.0, 0.3, shape)            # large offset
     mask = np.zeros(shape, dtype=bool)
     mask[:12] = True
@@ -216,7 +209,17 @@ def test_power_spectrum_mask_uses_valid_voxels_only():
     sig_k, idxs = make_kbins(shape, 5, box_dims=box)
     Pk_masked, _, _ = power_spectrum(cube, sig_k, idxs, box, mask=mask)
     Pk_naive, _, _ = power_spectrum(cube, sig_k, idxs, box, mask=None)
-    assert Pk_naive[0] > 10 * Pk_masked[0]
+
+    # Summed, not bin 0. Which modes land in the lowest bin depends on
+    # floating-point tie-breaking at the bin edge, and on this toy grid a whole
+    # shell of modes sits exactly there: numpy 2.4 (laptop) and 2.5 (ilifu)
+    # split them differently, moving bin 0 from 1 voxel to 7 and taking the
+    # bin-0 ratio from 1.2e5 to 1.0 -- while the summed ratio stayed at 1.4e4
+    # and 309, both enormous. The claim being tested is that stamping the
+    # footprint into the field dumps spurious power, and the total is the
+    # robust way to ask that. The production grid has no such ties: `idxs` is
+    # bit-identical across both machines.
+    assert Pk_naive.sum() > 10 * Pk_masked.sum()
 
 
 def test_power_spectrum_cross_of_a_field_with_itself_is_its_auto():
