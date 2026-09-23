@@ -614,6 +614,67 @@ Fourier modes, so both the inverse-gamma draw's per-mode independence and its
 Cropping cannot avoid this — the bounding box already loses zero valid voxels
 at 59.1% fill, so the footprint is genuinely irregular.
 
+### No beam in the MODEL — the next thing to add
+
+Distinct from "No beam in the simulation" below, which is about the truth
+curve. This is about the forward model itself:
+
+    d = w * (B Us s + B Uf f + Ug g) + n
+
+**Which components B acts on is the structurally important part**, and it is
+not "all of them":
+
+| component | beam? | why |
+|---|---|---|
+| signal `s` | **yes** | it is sky |
+| foreground `f` | **yes** | also sky |
+| ground spill, 1/f (`g`) | **no** | far-sidelobe and receiver effects; they enter *after* the main beam |
+| polarisation leakage | **no** (own operator) | leakage *is* a beam effect — the leakage beam, not the total-intensity one |
+| noise `n` | **no** | |
+
+So the systematics block sits **outside** B. That is a good reason it belongs
+where it is, and it means adding a beam does not disturb it.
+
+**The chromaticity is the point, not the smoothing.** For a 13.5 m dish at
+1.22 lambda/D the FWHM runs 1.60 deg at 970.9 MHz to 1.52 deg at 1023.0 MHz —
+a 5.4% change across the band. A frequency-dependent beam turns *spatial*
+structure into *spectral* structure, which is the standard mode-mixing
+problem, and it directly undermines the assumption everything in the
+systematics work rests on: that the foreground is smooth in frequency in each
+pixel. It is smooth per pixel only for an achromatic beam. With a chromatic
+one the foreground acquires spectral structure proportional to its own spatial
+gradients, and **the absorbed-fraction table above would have to be
+re-measured.** Nothing in that table survives a chromatic beam unexamined.
+
+At 1.55 deg the beam is 44.6 Mpc, 5.2 voxels, and cuts off around
+`k_perp ~ 0.141 Mpc^-1` — i.e. between bin 0 (0.068) and bin 1 (0.160). It
+suppresses transverse power across the whole range the measurement lives in.
+
+> **The "~1 deg FWHM, 26.6 Mpc, 3.3 voxels" in the simulation item below does
+> not match this band.** 1 deg is about right near the top of L band; at
+> 970-1023 MHz the same formula gives ~1.55 deg. Neither number should be
+> trusted for real work — take the FWHM from the MeerKLASS beam model rather
+> than from `1.22 lambda/D`, which assumes uniform illumination and is known
+> to be narrow for a tapered feed.
+
+**Implementation.** B is diagonal in `(k_perp, nu)`: transform the two
+transverse axes, multiply per channel, transform back. Cheap as an operator.
+It is **not** diagonal in the 3D Fourier basis, because the frequency
+dependence mixes `k_parallel` — so `construct_preconditioner`'s
+`M00_inv = 1/(1/S + N_inv)`, which assumes `Us` is unitary, stops being right.
+This is the same class of problem as `N_inv_scalar` not being allowed to carry
+the mask (see the note on that above): the exact operator is dense in the
+basis the preconditioner needs diagonal. The usual approximation is a
+band-averaged `|B(k_perp)|^2` on the diagonal.
+
+**Related but separate work.** Geoff is investigating beam effects on
+*observational* data in a separate run out of `Sampling Nb/` — that is where
+the numbers for what the beam actually does should come from, rather than from
+a formula here. There is also a distinct MeerKLASS ripple-beam-correction
+project in `museek` (UHF band, `~/beam_correction/NOTES.md`) aimed at a
+separate paper; the physics overlaps, the code does not. Check the boundary
+before building anything here.
+
 ### Smaller open items
 
 - **The sampler hard-codes `data_cube`.** The `T_gibbs` comparison needs runs
