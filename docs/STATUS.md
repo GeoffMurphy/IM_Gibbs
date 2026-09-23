@@ -308,6 +308,80 @@ spill. Footprint-restricted P(k), as a ratio to the true injected H I power:
 > and PCA curves "legitimately diverge" above k = 0.24 for exactly this reason.
 > Average the per-sample spectra, never the cubes.
 
+### Two more systematics, 2026-09-23
+
+Both reuse `SystematicBasis`, so the linear system, preconditioner and
+samplers are untouched. `scripts/systematics_injection.py` (renamed from
+`groundspill_injection.py`) takes `--systematic {groundspill,onef,leakage}`;
+use a separate `--out` per systematic.
+
+**Polarisation leakage.** Faraday rotation makes the leaked signal oscillate
+as `cos(2 chi_0 + 2 RM lambda^2)`, carried as quadratures so `chi_0` is linear
+and `RM` is the one fixed nonlinear parameter. The band spans
+`lambda^2 = 0.0859-0.0953 m^2`, so the cycle count is `RM * 0.0095 / pi`, and
+the 6-mode foreground basis absorbs:
+
+| RM (rad m^-2) | 10 | 100 | 300 | 500 | 1000 | 2000 |
+|---|---|---|---|---|---|---|
+| absorbed | 1.000 | 1.000 | 1.000 | 0.976 | 0.186 | 0.047 |
+
+**Ordinary Galactic Faraday depths are tens of rad m^-2, so leakage from them
+is invisible here** — smooth across 52 MHz and absorbed whole, exactly like
+smooth ground spill and harmless for the same reason. Only `RM >~ 500` is
+identifiable. Widening the band is what buys sensitivity to lower RM; this is
+an argument for the 500-channel cut if leakage ever matters.
+
+Unlike a ripple it is **not a single `k_parallel` mode**. Periodic in
+`lambda^2`, its local frequency period goes as `nu^3` and drifts 17% across
+the band, so its power spreads over a range of `k` and cannot be dealt with by
+excising one bin. Spatially it uses a 2D polynomial, not the scan-direction
+one: leakage follows the beam's polarisation response.
+
+**1/f.** A stochastic process, so it has no natural low-rank basis — but it
+has a covariance, and the leading Karhunen-Loeve modes of that covariance are
+a basis in the form this module already uses. **That gives `G` a derivation
+for once**: the eigenvalues *are* the prior variances, rather than coming from
+instrument characterisation as they must for ground spill.
+
+The common mode — a gain fluctuation moving every channel together — is
+constant in frequency and so inside the foreground span to machine precision.
+Passing `fg_basis` deflates it, and everything else the foreground can absorb,
+out of the frequency covariance *before* the modes are taken. The retained
+modes are then orthogonal to the foreground by construction, which is the
+ground-spill lesson applied before the fact rather than after: the run log
+reports `absorbs 0.0% of the onef templates`.
+
+`best_fit_amplitudes()` scores recovery against the best the block could do
+rather than the injected process, since a realisation is not exactly
+representable in a truncated basis and charging the sampler for the truncation
+would be wrong.
+
+### Running on ilifu
+
+`~/imgibbs-sys` is a clone of this branch; `scripts/submit_systematics.sh`
+submits one arm per job. `data/L2021_polished_cube.npy` is symlinked to the
+copy under `Sampling Nb/` — same file, md5 `204516c8a3a7484e6bbf5c5fc41a401a`.
+The interpreter is `~/ska/.venv` (Python 3.12.13), which already carries
+numpy, scipy, pyccl and tqdm; imgibbs needs nothing else, and fastbox is
+optional since `imgibbs.grid` imports it only to check the cosmology.
+
+**Validated against the laptop 2026-09-23**, which is worth doing rather than
+assuming — pyccl 3.3.0/numpy 2.4.2 here against 3.3.6/2.5.3 there:
+
+- `box_dims` bit-identical to all 15 decimals;
+- the per-voxel bin assignment `idxs` bit-identical, md5
+  `63b43f2c09533c439f090da11c5a768b`;
+- a 5-sample chain at the same seed agrees to ~12 significant figures in
+  every bin, the residual being BLAS/FFT ordering.
+
+Two tests failed there before this check and neither was a real difference;
+both are now version-robust. See the changelog. The second one is worth
+knowing about: on a **cubic** toy grid many modes share exactly the same `|k|`
+and a whole shell sits on a bin edge, where numpy 2.4 and 2.5 tie-break
+differently. The production grid is non-cubic and has no such ties — so the
+geometry that caused this project so much trouble is exactly what makes its
+binning reproducible.
+
 ### 2500-sample run, 2026-09-23 — `outputs/groundspill_run1`
 
 Four arms, 2500 samples each, identical chain seed and identical H I /

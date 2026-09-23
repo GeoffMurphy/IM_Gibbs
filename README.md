@@ -128,6 +128,22 @@ One sample takes ~4 s on this grid.
 
 ## Systematics
 
+Three are implemented: **ground spill**, **1/f noise** and **polarisation
+leakage**. All three reuse the same block, so adding another is a matter of
+supplying templates rather than touching the sampler.
+
+```bash
+python scripts/systematics_injection.py --systematic onef --arm on
+sbatch scripts/submit_systematics.sh leakage on --rm 1000     # on a cluster
+```
+
+A single lesson runs through all three: **whatever is smooth in frequency is
+already inside the foreground block's span and cannot be separated from it —
+and does not need to be.** The smooth part of ground spill, the 1/f common
+mode, and polarisation leakage at ordinary Galactic Faraday depths are all
+absorbed to machine precision. What is left is the identifiable part, and it
+is usually a smaller and more structured thing than the systematic as a whole.
+
 An instrumental systematic can be sampled as a fourth block,
 `d = w * (Us s + Uf f + Ug g) + n`, where `Ug` is a fixed low-rank basis and
 `g` a short vector of amplitudes. Ground spill is implemented:

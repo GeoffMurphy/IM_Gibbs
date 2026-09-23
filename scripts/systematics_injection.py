@@ -270,10 +270,18 @@ def run_arm(args):
     if args.arm == 'clean':
         print(f"\ninjected     : HI rms {truth['hi'].std():.3e} K, "
               f"noise {truth['noise_rms']:.3e} K, NO systematic (control arm)")
-    else:
+    elif args.systematic == 'groundspill':
         print(f"\ninjected     : HI rms {truth['hi'].std():.3e} K, "
               f"ripple {args.ripple_rms:.3e} K, smooth spill "
               f"{args.spill_level:.3e} K, noise {truth['noise_rms']:.3e} K")
+    else:
+        # --spill-level is a ground-spill knob and is NOT applied here, so do
+        # not print it: the log is the record of what was injected.
+        print(f"\ninjected     : HI rms {truth['hi'].std():.3e} K, "
+              f"{args.systematic} {args.ripple_rms:.3e} K rms, "
+              f"noise {truth['noise_rms']:.3e} K")
+        print(f"               (--spill-level does not apply to "
+              f"{args.systematic} and was ignored)")
     print(f"foreground   : rms {truth['foreground'].std():.3e} K "
           f"({truth['foreground'].std() / truth['hi'].std():.0f}x the HI)")
 
