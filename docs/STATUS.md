@@ -4,7 +4,7 @@ The working record for this repository: what the current configuration is, why
 it is that way, and what is still wrong with it. Read this before trusting a
 number out of here.
 
-Last substantive update: 2026-09-03.
+Last substantive update: 2026-09-23.
 
 ---
 
@@ -159,6 +159,333 @@ The fix is `T_gibbs` vs `T_pca` on a shared injected mock, using
 identical injected signal.
 
 ---
+
+## Systematics: the ground-spill block
+
+Added 2026-09-23. `imgibbs/systematics.py` plus an optional fourth block in
+`construct_A` / `construct_b` / `construct_preconditioner`, so the model can be
+
+    d = w * (Us s + Uf f + Ug g) + n
+
+`sys_basis=None` is the default everywhere and leaves the published three-block
+system numerically identical term for term — `tests/test_systematics.py` pins
+that with an exact-equality check, not a tolerance.
+
+### What is and is not identifiable, measured
+
+The foreground block already has per-pixel free amplitudes on `n_modes` smooth
+frequency modes, so **anything smooth in frequency is inside its span whatever
+its spatial structure**. Fraction of a template's power the Legendre foreground
+basis absorbs, on this band:
+
+| template | n=6 | n=10 | n=20 |
+|---|---|---|---|
+| smooth spill, `nu^beta` | 1.0000 | 1.0000 | 1.0000 |
+| ripple, 40 MHz period | 0.9945 | 1.0000 | 1.0000 |
+| ripple, 20 MHz period | 0.2872 | 0.9886 | 1.0000 |
+| ripple, 17.5 MHz period | 0.1837 | 0.9378 | 1.0000 |
+| ripple, 10 MHz period | 0.0577 | 0.2155 | 0.9987 |
+| ripple, 5 MHz period | 0.0149 | 0.0526 | 0.1954 |
+
+Two consequences, and they are the entire design:
+
+**The smooth part of ground spill is unidentifiable, and does not need to be
+identified.** Absorbed to machine precision at every `n_modes`. Injecting 0.5 K
+of it — 600x the H I rms — changes nothing. Putting a smooth template in `Ug`
+would only add a direction the data cannot constrain, so
+`spectral_templates(include_smooth=False)` is the default.
+
+**The ripple is identifiable and lands in the signal bins.** A ripple of period
+`P` is a *single* `k_parallel` mode at `k = 2*pi*B/(Lz*P)`, so it does not
+spread — it dumps all of its power into one bin. With B = 52.04 MHz and
+Lz = 254.39 Mpc: 20 MHz -> k = 0.064, 17.5 -> 0.073, 10 -> 0.129, against bin
+centres `[0.068, 0.160, 0.374, 0.875, 2.046]`. Anything in the 10–20 MHz range
+sits on the lowest one or two bins.
+
+**Raising `n_modes` is not the fix.** The table says 20 modes absorbs the
+ripple completely — but "`n_modes` is a trade with no unbiased setting" above
+records that 20 modes removes the 21cm signal too (T(k) 0.006–0.06) and pushes
+tau_int to 54–105. That is the argument for a tight-prior systematic block
+rather than more free polynomials.
+
+### Modelling decisions worth the reasoning
+
+- **Cosine/sine quadratures, not amplitude and phase.** Amplitude and phase are
+  a nonlinear pair; the two quadratures are linear parameters. That is what
+  keeps the block inside the constrained realisation with no Metropolis step.
+  The *period* is genuinely nonlinear and is **fixed**, not sampled.
+- **Low-order spatial structure, not per-pixel.** Per-pixel amplitudes on a
+  frequency template is exactly what `Uf` already is, so a systematic with that
+  much spatial freedom is unidentifiable however distinctive its spectrum. The
+  physics agrees: ground pickup is fixed in the telescope frame and varies only
+  with pointing. Default is constant + scan-direction gradient, giving **four
+  parameters** total.
+- **`G` is a prior, not a sampled covariance.** `F` can be drawn from an
+  inverse-Wishart because there are `Npix` independent amplitude vectors to
+  estimate it from. `g` is a single vector of four numbers — its covariance is
+  not identified by the data. It has to come from instrument characterisation,
+  and `--gs-prior` is deliberately generous.
+- **The Gram matrix factorises exactly.** Templates are separable, so
+  `Ug^T Ug = kron(spatial Gram, spectral Gram)` — an identity, not an
+  approximation, which is why the preconditioner block costs nothing.
+
+### `construct_A` is not symmetric, and that predates this
+
+Found while testing the new block. `Us(..., True)` is `rfftn`, which is the
+*pseudo-inverse* of `irfftn`, not its transpose: `irfftn` sums each interior
+mode with its conjugate, so the true adjoint is `2 x rfftn` there and
+`1 x rfftn` on the `kz = 0` and `kz = Nz/2` planes. Measured on a small grid,
+the blocks coupling `s` to real space differ from their transpose by exactly
+that factor of 2; the `s-s`, `f-f` and `f-g` blocks are symmetric to 1e-17.
+
+This is **pre-existing** — the signal-foreground block has always had it — and
+**not** changed here. It does not affect the MAP solution: `b0` is built with
+the same `Us(..., True)` convention, so the `s` rows are consistently scaled
+and the linear system is equivalent. It is a question for the *sampling* step,
+where the omega terms' covariance then does not exactly match the operator, on
+the Hermitian-redundant modes only (2 of `Nz+2` packed planes, ~0.8% at
+Nz = 250, and the `kz = 0` plane is already suppressed deliberately). Worth a
+look; not touched, because changing the operator silently would re-baseline the
+published sampler.
+
+`test_groundspill_block_matches_the_existing_hermitian_convention` pins that
+the new block follows the same convention, so there is one convention in the
+operator and not two.
+
+### Running it
+
+    python scripts/run_gibbs.py 6 --groundspill --gs-period 17.5
+
+writes a `g_trace` alongside the others. On real data you cannot tell a
+systematic that was removed from one that was never there — the same lesson as
+"The comparison cannot work without injection" — so the thing to run first is
+
+    python scripts/groundspill_injection.py --arm off --n-samples 120
+    python scripts/groundspill_injection.py --arm on  --n-samples 120
+    python scripts/groundspill_injection.py --summarise
+
+which builds a synthetic cube (simulated H I + the real cube's Legendre
+foreground + ground spill + noise) on the live grid and samples it twice with
+identical seeds, differing only in whether the block is on.
+
+**The recoverable fraction is capped by the table above.** The table is a
+*power* fraction, so the ceiling on a recovered *amplitude* is
+`sqrt(1 - absorbed)` — 90.3% at 17.5 MHz with 6 modes. Both scripts print the
+ceiling before they start, and warn if the period chosen is one the foreground
+already takes.
+
+`notebooks/4_systematics.ipynb` shows the structure of the block — the
+templates, the separability, and what a 6-mode clean leaves behind — without
+running the sampler. It needs only data shipped with the repository.
+
+### Measured, 2026-09-23
+
+80 samples per arm, burn 20, identical seeds, on the live grid. Injected:
+1e-3 K ripple at 17.5 MHz (1.16x the simulated H I rms) plus 0.5 K of smooth
+spill. Footprint-restricted P(k), as a ratio to the true injected H I power:
+
+| bin | k | s + f | s + f + g |
+|---|---|---|---|
+| 0 | 0.0684 | **88.49** | **15.04** | <- the ripple |
+| 1 | 0.1599 | 1.03 | 0.78 |
+| 2 | 0.3740 | 0.90 | 0.88 |
+| 3 | 0.8748 | 1.00 | 0.99 |
+| 4 | 2.0462 | 1.07 | 1.07 |
+
+- The 0.5 K smooth component is **600x the H I rms and does nothing**, in
+  either arm. That is the degeneracy table working as advertised.
+- The contamination is **confined to one bin**, as a single `k_parallel` mode
+  must be. Away from it, both arms recover the injected P(k) to within ~10%.
+- The block cuts the contaminated bin from 88x to 15x — a large improvement,
+  and **not a fix**. Bin 0 is still an order of magnitude high.
+
+> **Estimator note, and it is not a detail.** These are per-sample footprint
+> P(k), averaged over samples. An earlier draft of this table computed P(k)
+> from the *posterior-mean* signal cube instead, which gave 0.85 / 0.64 / 0.36
+> / 0.07 in bins 1-4 and looked like a severe high-k bias. It is not: the
+> posterior mean is Wiener-suppressed, so its power is biased low by
+> construction. The same distinction is already recorded above, where the Gibbs
+> and PCA curves "legitimately diverge" above k = 0.24 for exactly this reason.
+> Average the per-sample spectra, never the cubes.
+
+### 2500-sample run, 2026-09-23 — `outputs/groundspill_run1`
+
+Four arms, 2500 samples each, identical chain seed and identical H I /
+foreground / noise realisation. Traces flat from ~sample 250; ESS 100–2250 in
+bins 0–3. Bin 4 has tau_int ~180 (ESS 12) in every arm — it is noise-dominated
+and always has been, see "Smaller open items".
+
+Footprint-restricted P(k), per sample then averaged, as a ratio to the true
+injected H I:
+
+| bin | k | control (no systematic) | s + f | s + f + g | s + f + g, S held |
+|---|---|---|---|---|---|
+| 0 | 0.0684 | **0.13** | 88.57 | 15.29 | 3.15 |
+| 1 | 0.1599 | **0.59** | 1.02 | 0.77 | 0.78 |
+| 2 | 0.3740 | 0.86 | 0.89 | 0.87 | 0.91 |
+| 3 | 0.8748 | 0.99 | 1.00 | 1.00 | 0.99 |
+| 4 | 2.0462 | 1.17 | 1.17 | 1.15 | 1.06 |
+
+Ground-spill amplitude, and map correlation against the truth:
+
+| arm | g[0,0] / true | map r | slope |
+|---|---|---|---|
+| control | — | 0.725 | 0.50 |
+| s + f | — | 0.416 | 0.50 |
+| s + f + g | 76.4% | 0.626 | 0.51 |
+| s + f + g, S held | **90.1%** | 0.705 | 0.52 |
+
+**Posterior width, (84th-16th)/2 as a fraction of the median:**
+
+| arm | estimator | bin 0 | bin 1 | bin 2 | bin 3 | bin 4 |
+|---|---|---|---|---|---|---|
+| control | footprint, per sample | 10.3% | 1.6% | 0.5% | 1.2% | 4.5% |
+| control | `S` draw | 14.9% | 2.2% | 0.8% | 1.3% | 4.6% |
+| s+f+g | footprint, per sample | 1.2% | 1.4% | 0.5% | 1.3% | 3.2% |
+| s+f+g | `S` draw | 5.2% | 2.2% | 0.8% | 1.3% | 3.2% |
+
+**Do not read the contaminated bin's error bar as an accuracy.** In bin 0 the
+s+f+g posterior is 1.2% wide and the answer is 15x high — *tighter* than the
+control's 10.3% because the contamination pins the chain. Same behaviour as the
+`g` pulls of -22: the width measures the conditional draw, not the model error.
+
+**Bin 1 in the s+f+g arm looks better than the control, and is not.** It reads
+0.77 against the control's 0.59, which invites the reading that the block
+improves recovery there. It does not — that is leftover ripple power partly
+filling the foreground-induced deficit. The ripple residual contributes 0.17x
+the H I power to bin 1 (measured in `notebooks/4_systematics.ipynb`), and
+0.59 + 0.17 = 0.76 against the measured 0.77. Bin 1 is contaminated too; it
+just happens to be contaminated in the direction that hides the loss.
+
+- The block roughly halves the map damage: r goes 0.416 -> 0.626, and with S
+  held 0.705, against the control's 0.725. `figures/hi_map.png` shows why —
+  without the block the systematic's **scan-direction gradient is imprinted
+  straight onto the recovered H I map**, a red-to-blue ramp across RA.
+- The slope is ~0.50 in every arm including the control. That is the
+  posterior-mean Wiener suppression, not a bias introduced by the systematic.
+
+### The control arm loses low-k power, and it is the foreground basis
+
+**This is the result that matters most, and it has nothing to do with
+systematics.** With *nothing* injected, the sampler recovers **13% of the true
+P(k) in bin 0 and 59% in bin 1**. The trace is flat from sample 250, so it is
+converged, not burn-in.
+
+It is not signal-to-noise. Thermal noise P(k) is flat at 1.225e-6 K^2, so:
+
+| bin | H I / noise | recovered |
+|---|---|---|
+| 0 | 5.84 | 0.13 |
+| 1 | 4.25 | 0.59 |
+| 2 | 2.76 | 0.86 |
+| 3 | 0.53 | 0.99 |
+| 4 | 0.05 | 1.17 |
+
+The *most* signal-dominated bin recovers worst and the noise-dominated bins
+recover perfectly — the opposite of a noise explanation.
+
+It is the foreground basis. `kbins_from_crop` drops `kz = 0`, so the lowest
+surviving modes are 1, 2, 3 cycles across the 52 MHz band — periods of 52, 26
+and 17 MHz. Project each `kz` mode onto the 6-mode Legendre basis, average
+within each k-bin, and the predicted surviving fraction is:
+
+| bin | mean absorbed | predicted survival | measured |
+|---|---|---|---|
+| 0 | 0.693 | 0.307 | 0.13 |
+| 1 | 0.319 | 0.681 | 0.59 |
+| 2 | 0.097 | 0.903 | 0.86 |
+| 3 | 0.002 | 0.998 | 0.99 |
+| 4 | 0.000 | 1.000 | 1.17 |
+
+Bins 1–4 are predicted from first principles with no free parameters. Bin 0
+measured lower than predicted (0.13 vs 0.31), so a fifth arm — control with `S`
+held at the prior — was run to test whether the `S` step supplies the rest. It
+does:
+
+| bin | predicted from the FG basis | control, S held | control, S sampled |
+|---|---|---|---|
+| 0 | 0.307 | **0.35** | **0.13** |
+| 1 | 0.681 | 0.72 | 0.59 |
+| 2 | 0.903 | 0.89 | 0.86 |
+| 3 | 0.998 | 0.99 | 0.99 |
+| 4 | 1.000 | 1.06 | 1.17 |
+
+With `S` held, every bin matches the first-principles prediction. So the low-k
+loss splits cleanly in two: **the foreground basis takes most of it (1.00 ->
+0.31 in bin 0), and the `S` sampling step takes a further 2.7x on top (0.35 ->
+0.13)**, and 1.2x in bin 1.
+
+### One mechanism, both directions
+
+The `S` step and the ripple result are the same pathology seen twice:
+
+- **Contaminated bin:** the ripple adds power, `S` inflates, the signal block
+  can afford to absorb more of the contaminant, `g` gives it up. 90.1% -> 76.4%.
+- **Foreground-degenerate bin:** the foreground removes power, `S` deflates,
+  the signal block is penalised for holding power there, and loses more. 0.35
+  -> 0.13.
+
+In both cases `S` is estimated from a signal field whose power has already been
+distorted by another component, and the next draw amplifies the distortion.
+`S` has no anchor other than the data it is trying to help separate. This is
+also the shape of the suspected inpainting feedback below — three symptoms, one
+cause, and worth treating as one problem.
+
+**This bears directly on the `S_samp` task left to the student** (see the MSc
+scope note): estimating `S` from footprint-restricted power addresses the
+inpainting arm of it. It does not by itself address the degeneracy arm.
+
+**Why this matters beyond this experiment.** The README says foregrounds are
+marginalised over rather than projected out, "so the signal loss that a PCA
+clean incurs at low k does not have to be corrected for after the fact". The
+measured low-k loss here is comparable to the PCA transfer function recorded
+above for the same `n_modes = 6` (T(k) 0.10–0.26 at low k). These are not
+identical quantities — `T_pca` is the fraction of an *injected* mock that
+survives a clean, this is the ratio of recovered to true P(k) for the signal
+actually present — so a like-for-like comparison is still owed. But the claim
+should not be repeated until that comparison is done.
+
+### The `S` step steals from `g` — open, and the most interesting result
+
+`g` is recovered at **76%** of the injected amplitude, against a ceiling of
+90.3%. The traces say why, and they are unambiguous:
+
+```
+g[0,0]     9.14e-4 -> 8.40e-4 -> 7.53e-4 -> ... -> 7.33e-4   (true 9.58e-4)
+P(k) bin 0 8.81e-6 -> 4.45e-5 -> 8.79e-5 -> ... -> 9.90e-5   (true 7.15e-6)
+```
+
+At iteration 0, before `S` has adapted, `g` is recovered almost perfectly and
+bin 0 is close to the true H I power. As the chain runs, `S` in bin 0 inflates
+on the contaminated data, which makes it progressively cheaper for the *signal*
+block to absorb ripple power — and `g` gives it up. The two traces are
+anti-correlated throughout.
+
+This is the same class of problem as the suspected inpainting feedback below:
+`S` is estimated from data that contains the thing `S` is then used to
+separate. It is worth treating as one problem rather than two.
+
+Consequences for anyone using this:
+
+- **Do not read the `g` posterior width as an error bar.** It is ~1e-5 while
+  the bias is ~2.2e-4, so the pulls are -22 and -7. The scatter measures the
+  conditional draw, not the model competition.
+- A tighter `--gs-prior` will not help; it shrinks `g` further, the wrong way.
+- Directions not yet tried: hold `S` fixed at the prior in the contaminated
+  bin, sample the systematic before `S` rather than after, or down-weight the
+  affected modes in the `S` draw.
+
+### Open
+
+- **The period is fixed, not sampled.** Getting it wrong is the interesting
+  failure mode and is untested. A search over it needs a nonlinear step.
+- **The preconditioner's `g` block uses the unmasked Gram**, consistent with
+  the existing `N_inv_scalar` choice. For `f` the mask barely matters; for the
+  spatial templates here the fill fraction is 59%, so the approximation is
+  cruder. Convergence only, not correctness.
+- **Only ground spill so far.** A multiplicative systematic (gain) does not fit
+  this block at all — it would need linearisation or a separate Metropolis
+  step.
 
 ## Open issues
 

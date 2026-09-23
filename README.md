@@ -13,6 +13,10 @@ S      | s           — inverse-gamma, per radial k-bin
 F      | f           — inverse-Wishart
 ```
 
+Optionally a fourth component `g`, an instrumental systematic on a fixed
+low-rank basis with a fixed prior, sampled in the same solve:
+`(s, f, g) | S, F, d`. See [Systematics](#systematics).
+
 Foregrounds are marginalised over rather than projected out, so the signal loss
 that a PCA clean incurs at low k does not have to be corrected for after the
 fact.
@@ -120,6 +124,62 @@ S does not match this grid:
 
 One sample takes ~4 s on this grid.
 
+---
+
+## Systematics
+
+An instrumental systematic can be sampled as a fourth block,
+`d = w * (Us s + Uf f + Ug g) + n`, where `Ug` is a fixed low-rank basis and
+`g` a short vector of amplitudes. Ground spill is implemented:
+
+```bash
+python scripts/run_gibbs.py 6 --groundspill --gs-period 17.5
+```
+
+Two measured facts shape the whole thing, and both are worth knowing before
+using it.
+
+**The smooth part of ground spill is invisible, and harmlessly so.** The
+foreground block has per-pixel free amplitudes on `n_modes` smooth frequency
+modes, so a smooth spillover envelope lies inside its span to machine precision
+at any `n_modes`. Inject 0.5 K of it — 600x the H I rms — and nothing moves.
+
+**The standing-wave ripple is the part that matters.** It is a single
+`k_parallel` mode at `k = 2*pi*B/(Lz*P)`, so all of its power lands in one
+k-bin rather than spreading. On this grid a 10–20 MHz period puts it at
+k = 0.064–0.129 Mpc⁻¹, against bin centres `[0.068, 0.160, ...]` — the lowest
+signal bins. A 6-mode foreground clean absorbs only 18% of a 17.5 MHz ripple;
+20 modes absorbs it all, but `docs/STATUS.md` records that 20 modes removes the
+21cm signal too, so that is not a fix.
+
+The model is deliberately tight — four parameters by default (constant +
+scan-direction gradient, times cos + sin at one period) with a fixed prior `G`.
+Per-pixel amplitudes would just be more foreground modes. `G` is a prior rather
+than a sampled covariance because `g` is a single short vector, unlike `F`,
+which has `Npix` amplitude vectors behind it.
+
+On real data you cannot distinguish a systematic that was removed from one that
+was never there, so the thing to run first is the injection test:
+
+```bash
+python scripts/groundspill_injection.py --arm off --n-samples 120
+python scripts/groundspill_injection.py --arm on  --n-samples 120
+python scripts/groundspill_injection.py --summarise
+```
+
+It builds a synthetic cube — simulated H I, the real cube's Legendre
+foreground, ground spill, noise — on the live grid and samples it twice with
+identical seeds, differing only in whether the block is on. The block can only
+recover the part of the ripple the foreground does not already take; both
+scripts print that ceiling before they start.
+
+`notebooks/4_systematics.ipynb` shows the structure of the block — the
+templates, the separability, and what a 6-mode clean leaves behind — without
+running the sampler.
+
+`sys_basis=None` is the default throughout, so the three-block sampler is
+unchanged.
+
 ### Disk
 
 `x_sample` traces are ~13 MB each, so a 500-sample chain is ~6.5 GB. `S` is
@@ -138,15 +198,18 @@ imgibbs/
   kbins.py          radial k-binning and the P(k) estimator
   linear_system.py  A, b, and the block-diagonal preconditioner
   covariance.py     the inverse-gamma and inverse-Wishart draws
+  systematics.py    instrumental systematics: the ground-spill block
   data.py           locating the input cubes
 notebooks/
   1_generate_signal_cube.ipynb     simulated H I cube + S starting point
   2_gibbs_sampling.ipynb           the sampler, diagnostics, transfer function
   3_pca_transfer_function.ipynb    PCA clean benchmark
+  4_systematics.ipynb              structure of the ground-spill block
 scripts/
-  run_gibbs.py      the sampling loop without the plots
-  submit_gibbs.sh   SLURM wrapper
-tests/              regression tests on the geometry and the binning
+  run_gibbs.py              the sampling loop without the plots
+  groundspill_injection.py  systematics injection test, known answer
+  submit_gibbs.sh           SLURM wrapper
+tests/              regression tests on the geometry, binning and systematics
 docs/STATUS.md      what is settled, what is open, what is known to be wrong
 ```
 
