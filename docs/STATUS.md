@@ -663,7 +663,32 @@ is that recovery goes from 76% toward the 90.3% ceiling and bin 0 drops from
 every basis, and the module's advice changes from "omit the smooth template"
 to "project out the whole foreground span".
 
-Not yet run. Nothing in the current code deflates ground spill or leakage.
+**Submitted 2026-09-24** as `--deflate` (jobs 13875233 ground spill, 13875234
+leakage, 2500 samples, seed 1, same realisation as every other arm).
+
+Reading the result when it lands:
+
+- **Leakage is self-contained.** `outputs/leakage_run` on ilifu already holds
+  `clean`, `off` and `on`, so the deflated arm joins them and
+  `scripts/systematics_report.py --out outputs/leakage_run` gives the four-way
+  comparison directly.
+- **Ground spill is not.** Its baseline ran on the laptop
+  (`outputs/groundspill_run1`), and only the deflated arm is on ilifu. Either
+  compare against the recorded numbers above — 88.57 in bin 0, 76% recovery —
+  which is valid because the seed and the realisation are identical and the
+  data cube's md5 matches, or copy the deflated arm's `samples/` down into
+  `outputs/groundspill_run1` and run the report on all six arms at once.
+
+What counts as confirmation: `g` recovering ~100% **of the deflated target**,
+which is itself 90.4% of the undeflated injected amplitude — the deflation
+rescales `g_true` to the `sqrt(1 - 0.184)` ceiling, so 100% of it means the
+block found everything it was given. Plus bin 0 dropping from 15x toward the
+control's 0.13.
+
+What would falsify it: recovery staying near 76% of the new target, or bin 0
+staying high. That would mean the `f`-`g` degeneracy was not the mechanism and
+the residual is something else — most likely the `S` feedback acting on its
+own, in which case the `--fix-S` arm is the one to look at next.
 
 ### Smaller things from the same run
 
