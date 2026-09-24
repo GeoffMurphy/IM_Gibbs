@@ -130,8 +130,47 @@ def spillover_envelope(freqs, beta=ENVELOPE_INDEX, nu_ref=None):
     return (freqs / nu_ref) ** beta
 
 
+def deflate_foreground(templates, fg_basis):
+    """Project the foreground span out of ``templates``, then renormalise.
+
+    The part of a template that lies inside ``Uf``'s span is not a systematic
+    the sampler can identify -- it is a direction where ``f`` and ``g`` are
+    degenerate, and the split between them is decided by the priors rather
+    than by the data. Measured on the 2500-sample runs, leaving that direction
+    in costs a great deal: the two bases that carry it recovered 71-90% of the
+    injected amplitude and left an order of magnitude in the contaminated bin,
+    while the one basis built orthogonal to the foreground (``onef_basis``,
+    which deflates by construction) recovered 100% and left nothing.
+
+    Deflation is cheap and well conditioned here. On the live grid a 17.5 MHz
+    ripple keeps 82% of its power, the Gram condition number moves 1.01 ->
+    1.01, and the residual overlap with the foreground is ~1e-15.
+
+    Parameters
+    ----------
+    templates : array (n_t, n_freq)
+    fg_basis : array (n_modes, n_freq), ORTHONORMAL rows
+
+    Returns
+    -------
+    array (n_t, n_freq), unit RMS, orthogonal to ``fg_basis``.
+    """
+    fg_basis = np.asarray(fg_basis, dtype=float)
+    orth = np.abs(fg_basis @ fg_basis.T - np.eye(len(fg_basis))).max()
+    if orth > 1e-8:
+        raise ValueError(f'fg_basis rows are not orthonormal (max |B B^T - I| '
+                         f'= {orth:.2e}); the projection assumes they are')
+    out = templates - (templates @ fg_basis.T) @ fg_basis
+    rms = np.sqrt(np.mean(out ** 2, axis=1))
+    if np.any(rms < 1e-10):
+        raise ValueError('a template lies entirely inside the foreground span '
+                         'and vanishes under deflation; drop it instead')
+    return out / rms[:, None]
+
+
 def spectral_templates(freqs, period=RIPPLE_PERIOD_MHZ, n_harmonics=1,
-                       beta=ENVELOPE_INDEX, include_smooth=False):
+                       beta=ENVELOPE_INDEX, include_smooth=False,
+                       fg_basis=None):
     """Frequency templates for the ground-spill block, unit RMS each.
 
     The ripple enters as a cosine/sine **pair** at each harmonic rather than
@@ -179,7 +218,8 @@ def spectral_templates(freqs, period=RIPPLE_PERIOD_MHZ, n_harmonics=1,
         rows.append(env * np.sin(m * phase))
 
     out = np.array(rows)
-    return out / np.sqrt(np.mean(out ** 2, axis=1))[:, None]
+    out = out / np.sqrt(np.mean(out ** 2, axis=1))[:, None]
+    return out if fg_basis is None else deflate_foreground(out, fg_basis)
 
 
 def ripple_wavenumber(period, bandwidth, Lz):
@@ -370,7 +410,7 @@ class SystematicBasis:
 
 def groundspill_basis(freqs, shape, period=RIPPLE_PERIOD_MHZ, n_harmonics=1,
                       order=1, scan_axis=0, beta=ENVELOPE_INDEX,
-                      include_smooth=False):
+                      include_smooth=False, fg_basis=None):
     """Build the ground-spill :class:`SystematicBasis` for one grid.
 
     The default is four parameters: {constant, scan gradient} x {cos, sin} at
@@ -384,7 +424,8 @@ def groundspill_basis(freqs, shape, period=RIPPLE_PERIOD_MHZ, n_harmonics=1,
         spatial=scan_templates(shape, order=order, scan_axis=scan_axis),
         spectral=spectral_templates(freqs, period=period,
                                     n_harmonics=n_harmonics, beta=beta,
-                                    include_smooth=include_smooth),
+                                    include_smooth=include_smooth,
+                                    fg_basis=fg_basis),
         shape=tuple(int(n) for n in shape),
     )
 
@@ -518,7 +559,8 @@ def lambda_squared(freqs):
     return (C_M_MHZ / np.asarray(freqs, dtype=float)) ** 2
 
 
-def faraday_templates(freqs, rm=RM_DEFAULT, n_rm=1, rm_step=None):
+def faraday_templates(freqs, rm=RM_DEFAULT, n_rm=1, rm_step=None,
+                      fg_basis=None):
     """Polarisation-leakage templates: quadratures in ``lambda^2``, unit RMS.
 
     Polarised synchrotron is Faraday-rotated, so what leaks into total
@@ -591,10 +633,12 @@ def faraday_templates(freqs, rm=RM_DEFAULT, n_rm=1, rm_step=None):
     # Remove the mean: a constant is in the foreground span by construction,
     # so leaving it in would put a null direction in Ug.
     out = out - out.mean(axis=1)[:, None]
-    return out / np.sqrt(np.mean(out ** 2, axis=1))[:, None]
+    out = out / np.sqrt(np.mean(out ** 2, axis=1))[:, None]
+    return out if fg_basis is None else deflate_foreground(out, fg_basis)
 
 
-def leakage_basis(freqs, shape, rm=RM_DEFAULT, n_rm=1, rm_step=None, order=1):
+def leakage_basis(freqs, shape, rm=RM_DEFAULT, n_rm=1, rm_step=None, order=1,
+                  fg_basis=None):
     """Polarisation-leakage :class:`SystematicBasis`.
 
     Spatially this uses :func:`poly2d_templates`, not the scan-direction
@@ -604,7 +648,8 @@ def leakage_basis(freqs, shape, rm=RM_DEFAULT, n_rm=1, rm_step=None, order=1):
     """
     return SystematicBasis(
         spatial=poly2d_templates(shape, order=order),
-        spectral=faraday_templates(freqs, rm=rm, n_rm=n_rm, rm_step=rm_step),
+        spectral=faraday_templates(freqs, rm=rm, n_rm=n_rm, rm_step=rm_step,
+                                   fg_basis=fg_basis),
         shape=tuple(int(n) for n in shape),
     )
 

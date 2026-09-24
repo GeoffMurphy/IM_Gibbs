@@ -47,19 +47,21 @@ N_K_BINS = 5
 
 # Categorical hues, assigned in fixed order and never cycled.
 COLOURS = {'clean': '#2a78d6', 'off': '#eb6834', 'on': '#1baf7a',
-           'onfixedS': '#eda100', 'cleanfixedS': '#e87ba4'}
+           'onfixedS': '#eda100', 'cleanfixedS': '#e87ba4',
+           'ondeflated': '#4a3aa7'}
 LABELS = {'clean': 'control: no systematic injected',
           'off': 'contaminated, s + f',
           'on': 'contaminated, s + f + g',
           'onfixedS': 'contaminated, s + f + g, S held (diagnostic)',
-          'cleanfixedS': 'control, S held (diagnostic)'}
-ORDER = ['clean', 'cleanfixedS', 'off', 'on', 'onfixedS']
+          'cleanfixedS': 'control, S held (diagnostic)',
+          'ondeflated': 'contaminated, s + f + g, foreground deflated'}
+ORDER = ['clean', 'cleanfixedS', 'off', 'on', 'ondeflated', 'onfixedS']
 
 #: Arms that carry a posterior band. The two that are actually being compared
 #: -- the control and the realistic configuration. The rest are plotted as bare
 #: lines: they are there for visibility, and five overlapping bands on one axis
 #: read as noise.
-BAND_ARMS = ('clean', 'on')
+BAND_ARMS = ('clean', 'on', 'ondeflated')
 INK, INK2, MUTED = '#0b0b0b', '#52514e', '#898781'
 GRID, AXIS = '#e1e0d9', '#c3c2b7'
 
@@ -360,7 +362,8 @@ def figures(args, res, sig_k, true_pk, hit, hi, flag, figdir):
 
     short = {'clean': 'control (no systematic)', 'off': 's + f',
              'on': 's + f + g', 'onfixedS': 's + f + g, S held',
-             'cleanfixedS': 'control, S held'}
+             'cleanfixedS': 'control, S held',
+             'ondeflated': 's + f + g, deflated'}
     panels = [('true injected H I', masked(hi[:, :, chan]))]
     panels += [(short.get(a, a), masked(r['mean_cube'][:, :, chan]))
                for a, r in res.items()]

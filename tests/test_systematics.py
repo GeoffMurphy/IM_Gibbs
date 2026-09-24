@@ -24,7 +24,8 @@ import pytest
 
 from imgibbs import (
     RM_DEFAULT, SystematicBasis, best_fit_amplitudes, construct_A, construct_b,
-    construct_preconditioner, faraday_templates, groundspill_basis,
+    construct_preconditioner, deflate_foreground, faraday_templates,
+    groundspill_basis,
     groundspill_cube, lambda_squared, leakage_basis, onef_basis,
     onef_covariance, period_scan, poly2d_templates, realise,
     ripple_wavenumber, scan_templates, spectral_templates, spillover_envelope,
@@ -580,3 +581,70 @@ def test_best_fit_amplitudes_on_something_outside_the_basis():
     # defining property of a least-squares fit.
     resid = noise.ravel() - basis.apply(g)
     assert np.abs(basis.adjoint(resid)).max() < 1e-8 * np.abs(g).max() + 1e-10
+
+
+# ---------------------------------------------------------------------------
+# Deflation
+# ---------------------------------------------------------------------------
+
+def test_deflation_removes_the_foreground_overlap():
+    """After deflation the templates carry nothing the foreground can absorb,
+    which is the whole point: that overlap is a direction where f and g are
+    degenerate and the priors, not the data, decide the split."""
+    fg = legendre_basis(len(REAL_FREQS), 6)
+    plain = spectral_templates(REAL_FREQS, period=17.5)
+    deflated = spectral_templates(REAL_FREQS, period=17.5, fg_basis=fg)
+    assert np.abs(fg @ plain.T).max() > 1e-2
+    assert np.abs(fg @ deflated.T).max() < 1e-10
+    assert np.allclose(np.sqrt(np.mean(deflated ** 2, axis=1)), 1.0)
+
+
+def test_deflation_keeps_the_basis_well_conditioned():
+    """Deflation is only usable if it does not make the templates collinear.
+    On the live grid a 17.5 MHz ripple keeps ~82% of its power and the Gram
+    condition number barely moves."""
+    fg = legendre_basis(len(REAL_FREQS), 6)
+    for templates in (spectral_templates(REAL_FREQS, period=17.5, fg_basis=fg),
+                      faraday_templates(REAL_FREQS, rm=1000.0, fg_basis=fg)):
+        gram = templates @ templates.T
+        gram = gram / np.sqrt(np.outer(np.diag(gram), np.diag(gram)))
+        assert np.linalg.cond(gram) < 1.5
+
+
+def test_deflation_keeps_most_of_the_ripple():
+    fg = legendre_basis(len(REAL_FREQS), 6)
+    plain = spectral_templates(REAL_FREQS, period=17.5)
+    projected = plain - (plain @ fg.T) @ fg
+    kept = (projected ** 2).sum(axis=1) / (plain ** 2).sum(axis=1)
+    # 1 - 0.1837 absorbed, from the table in the module docstring.
+    assert np.allclose(kept, 1 - 0.1837, atol=5e-3)
+
+
+def test_deflate_rejects_a_non_orthonormal_basis():
+    raw = np.polynomial.legendre.legvander(
+        np.linspace(-1, 1, len(REAL_FREQS)), 5).T
+    with pytest.raises(ValueError, match='orthonormal'):
+        deflate_foreground(spectral_templates(REAL_FREQS), raw)
+
+
+def test_deflate_rejects_a_template_that_vanishes():
+    """A template entirely inside the foreground span would deflate to zero and
+    then be normalised by ~0. Fail loudly rather than emit noise."""
+    fg = legendre_basis(len(REAL_FREQS), 6)
+    with pytest.raises(ValueError, match='vanishes'):
+        deflate_foreground(fg[:1] * 1.0, fg)
+
+
+def test_deflated_basis_still_works_in_the_linear_system(system):
+    """The deflated basis is an ordinary SystematicBasis -- the operator, the
+    adjoint and the Gram factorisation must all still hold."""
+    fg = legendre_basis(SHAPE[2], N_MODES)
+    b = groundspill_basis(FREQS, SHAPE, period=40.0, fg_basis=fg)
+    rng = np.random.default_rng(21)
+    g = rng.normal(size=b.g_shape)
+    y = rng.normal(size=int(np.prod(SHAPE)))
+    assert np.isclose(float(b.apply(g) @ y), float((g * b.adjoint(y)).sum()),
+                      rtol=1e-12)
+    eye = np.eye(b.n_params)
+    explicit = np.array([b.apply(eye[i]) for i in range(b.n_params)])
+    assert np.allclose(explicit @ explicit.T, b.gram(), rtol=1e-12)

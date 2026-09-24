@@ -102,6 +102,15 @@ def parse_args():
                    help='chain seed. Both arms MUST use the same one.')
     p.add_argument('--quick', action='store_true',
                    help='64 channels, for a plumbing smoke test only')
+    p.add_argument('--deflate', action='store_true',
+                   help='project the foreground span out of the MODELLING '
+                        'templates before sampling. The injected systematic is '
+                        'unchanged -- this changes only what the block is '
+                        'allowed to describe, dropping the directions where f '
+                        'and g are degenerate. 1/f does this by construction '
+                        'and recovered 100%% of its amplitude; ground spill '
+                        'and leakage do not and recovered 71-90%%. See '
+                        'docs/STATUS.md.')
     p.add_argument('--fix-S', action='store_true',
                    help='DIAGNOSTIC, not an analysis. Hold S at the shipped '
                         'prior (the true simulated H I power) instead of '
@@ -173,10 +182,13 @@ def build_basis(args, freqs, shape, fg_basis):
     prior, because nothing in their models says one template should carry more
     amplitude than another.
     """
+    deflate = fg_basis if getattr(args, 'deflate', False) else None
     if args.systematic == 'groundspill':
-        basis = groundspill_basis(freqs, shape, period=args.period)
+        basis = groundspill_basis(freqs, shape, period=args.period,
+                                  fg_basis=deflate)
     elif args.systematic == 'leakage':
-        basis = leakage_basis(freqs, shape, rm=args.rm, order=1)
+        basis = leakage_basis(freqs, shape, rm=args.rm, order=1,
+                              fg_basis=deflate)
     elif args.systematic == 'onef':
         basis, prior_var = onef_basis(
             freqs, shape, alpha=args.alpha, beta=args.beta,
@@ -258,7 +270,8 @@ def build_truth(args):
 def run_arm(args):
     np.random.seed(args.seed)
     on = args.arm == 'on'
-    suffix = f'_{args.arm}{"fixedS" if args.fix_S else ""}_'
+    suffix = (f'_{args.arm}{"deflated" if args.deflate else ""}'
+              f'{"fixedS" if args.fix_S else ""}_')
     sample_dir = os.path.join(args.out, 'samples')
     os.makedirs(sample_dir, exist_ok=True)
 
@@ -357,7 +370,21 @@ def run_arm(args):
         g_mean = np.zeros(sys_basis.g_shape)
         print(f'systematic   : {args.systematic} ON, {sys_basis.n_params} '
               f'params ({sys_basis.n_s} spatial x {sys_basis.n_t} spectral), '
-              f'prior std {args.sys_prior:g} K')
+              f'prior std {args.sys_prior:g} K'
+              + (', FOREGROUND DEFLATED' if args.deflate else ''))
+        # Score against the best this basis could do, not against the injected
+        # amplitudes: under deflation the two live in different bases, and
+        # charging the block for what it was never given is meaningless. With
+        # no deflation this reproduces the injected values exactly.
+        truth['g_true'] = best_fit_amplitudes(sys_basis, truth['spill'])
+        if args.deflate:
+            # Template-level, not cube-level: the injected cube also carries
+            # the smooth spill, which is 500x the ripple and belongs to the
+            # foreground, so a cube-level fraction just measures that.
+            print(f'               deflation keeps {1 - absorbed:.1%} of each '
+                  f'template; the foreground takes the rest, and g_true is '
+                  f'rescaled to match so recovery is scored against what the '
+                  f'block was actually given')
     else:
         print(f'systematic   : {args.systematic} injected, NOT modelled '
               f'(s + f only)')
@@ -390,7 +417,9 @@ def run_arm(args):
                                        rfft_shape, f_len, f_shape, shape,
                                        sys_basis=sys_basis, G=G)
 
-    meta = dict(arm=args.arm + ('fixedS' if args.fix_S else ''),
+    meta = dict(arm=args.arm + ('deflated' if args.deflate else '')
+                + ('fixedS' if args.fix_S else ''),
+                deflate=bool(args.deflate),
                 systematic=args.systematic, absorbed_by_fg=absorbed,
                 fix_S=bool(args.fix_S), thin=args.thin, n_modes=args.n_modes, n_samples=args.n_samples,
                 burn=args.burn, seed=args.seed, tol=args.tol,
