@@ -614,6 +614,72 @@ Fourier modes, so both the inverse-gamma draw's per-mode independence and its
 Cropping cannot avoid this — the bounding box already loses zero valid voxels
 at 59.1% fill, so the footprint is genuinely irregular.
 
+### 1/f and leakage, 2500 samples each, 2026-09-24 — and what the difference means
+
+Run on ilifu, `~/imgibbs-sys/outputs/{onef,leakage}_run`. Same seed, same H I /
+foreground / noise realisation, same 1e-3 K injected amplitude as the ground
+spill run. Footprint-restricted P(k), ratio to the true injected H I:
+
+| bin | k | control | **1/f** off / on | **leakage** off / on | ground spill off / on |
+|---|---|---|---|---|---|
+| 0 | 0.0684 | 0.13 | 106.44 / **0.11** | 79.65 / **11.84** | 88.57 / 15.29 |
+| 1 | 0.1599 | 0.59 | 1.29 / 0.60 | 1.29 / 0.91 | 1.02 / 0.77 |
+| 2 | 0.3740 | 0.86 | 0.90 / 0.86 | 0.92 / 0.89 | 0.89 / 0.87 |
+| 3 | 0.8748 | 0.99 | 0.99 / 0.98 | 0.99 / 0.99 | 1.00 / 1.00 |
+| 4 | 2.0462 | 1.17 | 1.17 / 1.16 | 1.22 / 1.16 | 1.17 / 1.15 |
+
+Amplitude recovery:
+
+| systematic | recovered | FG absorbs the templates |
+|---|---|---|
+| **1/f** | **100.3 - 103.5%** | **0.0%** (deflated by construction) |
+| leakage | 71 - 90% | 18.6% |
+| ground spill | 76% | 18.4% |
+
+**1/f is removed completely.** Bin 0 goes 106 -> 0.11 against a control of
+0.13, and every other bin lands on the control to two decimals. In
+`figures/power_spectrum.png` the `s+f+g` curve lies on top of the control
+everywhere. The amplitudes come back at 100%, not at a ceiling.
+
+### The likely reason, and it is actionable
+
+**The 1/f basis is the only one deflated against the foreground.**
+`onef_basis` projects the foreground span out of the frequency covariance
+*before* taking the KL modes, so its templates are orthogonal to `Uf` by
+construction — the run log reports `absorbs 0.0%`. Ground spill and leakage use
+physical templates with 18% of their power inside the foreground span, and
+both recover badly and leave an order-of-magnitude residual in bin 0.
+
+The hypothesis is that the residual is not the foreground absorbing its share
+harmlessly, but a genuine `f`-`g` degeneracy: in the overlapping direction the
+split is set by the priors, and with `G` much tighter than `F` neither block
+claims it cleanly, so it lands in `s` and inflates `S` — the feedback recorded
+above.
+
+**Concrete test, and it is cheap:** deflate the ground-spill templates against
+`evecs` the same way `onef_basis` does, and re-run the `on` arm. The prediction
+is that recovery goes from 76% toward the 90.3% ceiling and bin 0 drops from
+15x toward the control. If it does, deflation should become the default for
+every basis, and the module's advice changes from "omit the smooth template"
+to "project out the whole foreground span".
+
+Not yet run. Nothing in the current code deflates ground spill or leakage.
+
+### Smaller things from the same run
+
+- **Both 1/f and leakage contaminate bin 1**, unlike ground spill: `off` reads
+  1.29 in bin 1 against the control's 0.59. For 1/f that is expected — it is
+  broadband. For leakage it is the chirp's wings, which
+  `notebooks/4_systematics.ipynb` §9 predicted at ~10x the ground-spill level.
+  The block removes most of it (1/f 0.60, leakage 0.91).
+- **`--fix-S` chains mix far better.** With `S` held, `tau_int` is 1.0 in every
+  bin (ESS 2250) against 6-28 when it is sampled. Sampling `S` is most of the
+  autocorrelation in this sampler.
+- **Bin 4 remains poorly converged in every arm**, `tau_int` 144-202, ESS ~12 at
+  2500 samples. Unchanged from the ground spill run and from the pre-systematics
+  numbers; it is noise-dominated and always has been.
+- Runtimes on ilifu, 8 CPUs: 1.4-9.1 s/sample depending on arm.
+
 ### No beam in the MODEL — the next thing to add
 
 Distinct from "No beam in the simulation" below, which is about the truth

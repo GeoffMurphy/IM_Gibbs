@@ -5,7 +5,7 @@ Discovers every arm in an output directory, then writes convergence
 diagnostics, the recovered power spectrum, the recovered H I map, and the
 ground-spill amplitude posterior.
 
-    python scripts/groundspill_report.py --out outputs/groundspill_run1
+    python scripts/systematics_report.py --out outputs/onef_run
 
 Two estimator choices here matter, and both follow ``docs/STATUS.md``.
 
@@ -245,7 +245,8 @@ def main():
             for rr in range(r['burn'], r['meta']['n_samples'])])
         truth_g = np.array(r['meta']['g_true'])
         r['g'], r['g_true'] = g, truth_g
-        print(f'\nGROUND-SPILL AMPLITUDES, arm "{arm}" (K)')
+        label = r['meta'].get('systematic', 'systematic').upper()
+        print(f'\n{label} AMPLITUDES, arm "{arm}" (K)')
         print('  spatial spectral       true      recovered        of true')
         for i in range(truth_g.shape[0]):
             for j in range(truth_g.shape[1]):
