@@ -17,9 +17,13 @@ Optionally a fourth component `g`, an instrumental systematic on a fixed
 low-rank basis with a fixed prior, sampled in the same solve:
 `(s, f, g) | S, F, d`. See [Systematics](#systematics).
 
-Foregrounds are marginalised over rather than projected out, so the signal loss
-that a PCA clean incurs at low k does not have to be corrected for after the
-fact.
+Foregrounds are marginalised over rather than projected out. Measured against a
+PCA clean on the same cube, k-bins, estimator and truth, the sampler retains
+substantially more signal at intermediate k — 0.86 against 0.46 at
+k = 0.37 Mpc⁻¹, 0.99 against 0.71 at k = 0.87 — so that loss does not have to
+be corrected for after the fact. **At the lowest bin the two are equivalent**
+(0.13 against 0.16): both lose ~85%, and marginalising does not rescue it. See
+`docs/STATUS.md`.
 
 This version runs on the **real MeerKLASS L2021 footprint** — a non-cubic
 (70, 45, 250) grid with strongly anisotropic voxels (~8.6 x 8.6 x 1.0 Mpc) and
@@ -178,9 +182,9 @@ On real data you cannot distinguish a systematic that was removed from one that
 was never there, so the thing to run first is the injection test:
 
 ```bash
-python scripts/groundspill_injection.py --arm off --n-samples 120
-python scripts/groundspill_injection.py --arm on  --n-samples 120
-python scripts/groundspill_injection.py --summarise
+python scripts/systematics_injection.py --arm off --n-samples 120
+python scripts/systematics_injection.py --arm on  --n-samples 120
+python scripts/systematics_injection.py --summarise
 ```
 
 It builds a synthetic cube — simulated H I, the real cube's Legendre
@@ -220,11 +224,14 @@ notebooks/
   1_generate_signal_cube.ipynb     simulated H I cube + S starting point
   2_gibbs_sampling.ipynb           the sampler, diagnostics, transfer function
   3_pca_transfer_function.ipynb    PCA clean benchmark
-  4_systematics.ipynb              structure of the ground-spill block
+  4_systematics.ipynb              structure of the three systematics
 scripts/
   run_gibbs.py              the sampling loop without the plots
-  groundspill_injection.py  systematics injection test, known answer
+  systematics_injection.py  systematics injection test, known answer
+  systematics_report.py     tables and figures from a finished injection run
+  pca_benchmark.py          PCA + transfer function, on the sampler's k-bins
   submit_gibbs.sh           SLURM wrapper
+  submit_systematics.sh     SLURM wrapper, one job per arm
 tests/              regression tests on the geometry, binning and systematics
 docs/STATUS.md      what is settled, what is open, what is known to be wrong
 ```

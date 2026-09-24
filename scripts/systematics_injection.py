@@ -35,9 +35,9 @@ What to look at in the summary
 
 Usage
 -----
-    python scripts/groundspill_injection.py --arm off --n-samples 120
-    python scripts/groundspill_injection.py --arm on  --n-samples 120
-    python scripts/groundspill_injection.py --summarise
+    python scripts/systematics_injection.py --arm off --n-samples 120
+    python scripts/systematics_injection.py --arm on  --n-samples 120
+    python scripts/systematics_injection.py --summarise
 
 Use ``--quick`` to cut the frequency axis to 64 channels for a smoke test;
 the k-binning then no longer matches the shipped ``S``, so a quick run proves
@@ -345,7 +345,13 @@ def run_arm(args):
     else:
         # Same question, asked of whatever templates this systematic uses:
         # how much of the basis lies inside the foreground span?
-        probe, _ = build_basis(args, grid.freqs, shape, evecs)
+        # Deliberately undeflated: this is the question "how much of this
+        # systematic can the foreground take", which is a property of the
+        # physical templates, not of whichever basis the run happens to model
+        # with. Probing build_basis under --deflate returns 0.0% by
+        # construction and says nothing.
+        undeflated = argparse.Namespace(**{**vars(args), 'deflate': False})
+        probe, _ = build_basis(undeflated, grid.freqs, shape, evecs)
         t = probe.spectral / np.linalg.norm(probe.spectral, axis=1)[:, None]
         absorbed = float(np.mean(np.sum((evecs @ t.T) ** 2, axis=0)))
         print(f'identifiable : the {args.n_modes}-mode foreground basis '
@@ -356,8 +362,12 @@ def run_arm(args):
               f'systematic block to find. Expect g to come back near zero -- '
               f'that is the correct answer, not a failure. Shorten --period '
               f'or widen the band.')
+    # absorbed is a fraction of template POWER, so the ceiling on the
+    # recovered AMPLITUDE is its square root: a template that keeps 81.6% of
+    # its power keeps 90.3% of its amplitude, and g_true is rescaled to that.
     print(f'               ceiling on recoverable amplitude: '
-          f'{1 - absorbed:.1%} of the injected value')
+          f'{np.sqrt(1 - absorbed):.1%} of the injected value '
+          f'({1 - absorbed:.1%} of its power)')
 
     sys_basis = G = g_mean = None
     if on:
@@ -382,7 +392,8 @@ def run_arm(args):
             # the smooth spill, which is 500x the ripple and belongs to the
             # foreground, so a cube-level fraction just measures that.
             print(f'               deflation keeps {1 - absorbed:.1%} of each '
-                  f'template; the foreground takes the rest, and g_true is '
+                  f'template\'s power ({np.sqrt(1 - absorbed):.1%} of its '
+                  f'amplitude); the foreground takes the rest, and g_true is '
                   f'rescaled to match so recovery is scored against what the '
                   f'block was actually given')
     else:

@@ -260,9 +260,9 @@ writes a `g_trace` alongside the others. On real data you cannot tell a
 systematic that was removed from one that was never there — the same lesson as
 "The comparison cannot work without injection" — so the thing to run first is
 
-    python scripts/groundspill_injection.py --arm off --n-samples 120
-    python scripts/groundspill_injection.py --arm on  --n-samples 120
-    python scripts/groundspill_injection.py --summarise
+    python scripts/systematics_injection.py --arm off --n-samples 120
+    python scripts/systematics_injection.py --arm on  --n-samples 120
+    python scripts/systematics_injection.py --summarise
 
 which builds a synthetic cube (simulated H I + the real cube's Legendre
 foreground + ground spill + noise) on the live grid and samples it twice with
@@ -530,6 +530,10 @@ survives a clean, this is the ratio of recovered to true P(k) for the signal
 actually present — so a like-for-like comparison is still owed. But the claim
 should not be repeated until that comparison is done.
 
+> **Done, 2026-09-24** — see "The PCA comparison, done like-for-like" below.
+> The claim holds at every bin except the lowest, where PCA (0.16) and the
+> sampler (0.13) lose the same ~85%. The README needs narrowing to match.
+
 ### The `S` step steals from `g` — open, and the most interesting result
 
 `g` is recovered at **76%** of the injected amplitude, against a ceiling of
@@ -571,6 +575,54 @@ Consequences for anyone using this:
 - **Only ground spill so far.** A multiplicative systematic (gain) does not fit
   this block at all — it would need linearisation or a separate Metropolis
   step.
+
+## Picking this up again — state at 2026-09-24
+
+Stopping point agreed after the deflation test, before the beam. Nothing is
+half-finished on disk; the items below are decisions and follow-ups, in the
+order they are worth doing.
+
+1. **Fix `build_truth` and re-run the leakage deflated arm.** The only real
+   loose end. Everything except ground spill is dispatched through
+   `build_basis`, which applies `--deflate`, so the deflated leakage and 1/f
+   runs *injected* a foreground-orthogonal signal rather than modelling the
+   identifiable part of a realistic one. Build the truth from the undeflated
+   basis and let `best_fit_amplitudes` project onto the deflated model basis,
+   exactly as ground spill already does. ~2 line change, then a 2 h job.
+   Until then **ground spill is the only clean evidence for deflation** — it
+   is strong, but 1/f and leakage must not be cited as independent support.
+
+2. **Make deflation the default for new bases.** The ground-spill result is
+   unambiguous: recovery 76.4% -> 89.6% against a 90.4% ceiling, the
+   contaminated bin 15.29 -> 0.12 against a control of 0.13, posterior width
+   5x smaller and runtime 3x shorter. Any new systematic basis should be built
+   with `fg_basis=evecs` unless there is a reason not to.
+
+3. **Narrow the README's claim about low-k signal loss.** The like-for-like
+   PCA comparison supports it at every bin except the lowest, where PCA (0.16)
+   and the sampler (0.13) lose the same ~85%. As written the README overstates
+   it.
+
+4. **The beam.** The agreed next step, deliberately not started — see "No beam
+   in the MODEL" below. Note that a chromatic beam turns spatial structure
+   into spectral structure, which is the assumption every absorbed-fraction
+   number in `imgibbs/systematics.py` rests on, so those tables need
+   re-measuring once `B` exists.
+
+### Where things live
+
+- Branch `systematics`, unmerged. `main` contains none of this.
+- ilifu: `~/imgibbs-sys`, run with `~/ska/.venv`, always through Slurm — the
+  login node is throttled and blocks `rsync`. The transfer node
+  (`ilifu-transfer`) needs its own OTP, so bulk cube transfer needs a human at
+  a terminal. `systematics_report.py --export-arms/--import-arms` exists to
+  avoid needing one: it ships ~5 MB per arm instead of 0.8 GB of cubes.
+- `outputs/groundspill_run1` (local, gitignored, ~3 GB) holds five arms plus
+  the imported deflated one. **Do not delete it** — the ilifu copy has only
+  the deflated arm, and the baselines are a 7 h rerun.
+- `pyccl` and `fastbox` are installed *nowhere* reachable, including ilifu.
+  `systematics_report.py` and `pca_benchmark.py` are written to work without
+  them; `notebooks/3_pca_transfer_function.ipynb` still needs both.
 
 ## Open issues
 
@@ -636,6 +688,11 @@ Amplitude recovery:
 | leakage | 71 - 90% | 18.6% |
 | ground spill | 76% | 18.4% |
 
+> **Read the 1/f row with care.** Its basis is deflated in *both* the truth and
+> the model, so its 100% is partly by construction and is not independent
+> evidence that deflation helps. See "But the leakage arm does not test this"
+> below. The ground-spill `--deflate` arm is the clean test.
+
 **1/f is removed completely.** Bin 0 goes 106 -> 0.11 against a control of
 0.13, and every other bin lands on the control to two decimals. In
 `figures/power_spectrum.png` the `s+f+g` curve lies on top of the control
@@ -689,6 +746,159 @@ What would falsify it: recovery staying near 76% of the new target, or bin 0
 staying high. That would mean the `f`-`g` degeneracy was not the mechanism and
 the residual is something else — most likely the `S` feedback acting on its
 own, in which case the `--fix-S` arm is the one to look at next.
+
+### The PCA comparison, done like-for-like, 2026-09-24
+
+The comparison owed above is now in `scripts/pca_benchmark.py`, overlaid on the
+power spectrum figure with `systematics_report.py --pca`. Same simulated cube
+the `clean` arm saw, same footprint estimator, same five `kbins_from_crop`
+bins, same truth. Both methods then report the same quantity: **the fraction
+of the true H I power that survives.**
+
+| bin | k | PCA, 8 modes | Gibbs control | Gibbs `ondeflated` |
+|---|---|---|---|---|
+| 0 | 0.0684 | 0.162 | 0.13 | 0.12 |
+| 1 | 0.1599 | 0.355 | **0.59** | 0.59 |
+| 2 | 0.3740 | 0.460 | **0.86** | 0.86 |
+| 3 | 0.8748 | 0.706 | **0.99** | 0.99 |
+| 4 | 2.0462 | 1.000 | 1.17 | 1.15 |
+
+**The sampler retains more signal than PCA everywhere except the lowest bin**,
+and the gap is large in the middle: 0.86 against 0.46 at k = 0.37, 0.99 against
+0.71 at k = 0.87. At bin 0 the two are equivalent (0.13 vs 0.16) — both lose
+~85% — so the README's claim that marginalising avoids the low-k signal loss a
+PCA clean incurs is **not** supported at the lowest bin, and is supported at
+every other. That is a narrower claim than the README currently makes and it
+should be rewritten to match.
+
+Two things were needed to make the numbers comparable, and both change the
+answer materially:
+
+- **Noise debias.** PCA leaves the full thermal noise in the map; the Gibbs
+  `s` field is Wiener-filtered. Raw, PCA "recovers" 21.8x the truth in bin 4,
+  all of it noise. The script pushes independent noise-only draws through the
+  same projector and subtracts. The debiased `(PCA - noise)/true` reproduces
+  the exact `T(k)` to a few per cent in every bin, which validates both.
+- **The transfer function is computed exactly**, as `P(F s_true)/P(s_true)`
+  with the known signal and the same projector, rather than by injection. In
+  a simulation the signal is known, so the injection estimator is a needless
+  layer in front of a quantity already in hand.
+
+**The injection estimator is badly biased with Gaussian mocks**, which is worth
+recording because it is the on-sky procedure. With mocks built by randomising
+the phases of the H I cube — reproducing its power spectrum mode for mode — the
+injection TF came back 1.3-1.8x too high:
+
+| bin | T exact | T injected (Gaussian mocks) | ratio |
+|---|---|---|---|
+| 0 | 0.162 | 0.210 | 1.30 |
+| 1 | 0.355 | 0.581 | 1.64 |
+| 2 | 0.460 | 0.813 | 1.77 |
+| 3 | 0.706 | 0.984 | 1.39 |
+| 4 | 1.000 | 0.995 | 1.00 |
+
+`F = I - A A^T` acts along frequency, so in Fourier space it is a *coherent*
+sum over `k_par` at fixed `k_perp`; the surviving power depends on the relative
+phases across `k_par`, which a Gaussian field with the right P(k) does not
+carry. Matching the power spectrum is not enough — the mocks have to match the
+phase structure, i.e. be lognormal with RSD, as Cunnington et al. use.
+Reproduce with `--injection-tf N`.
+
+**Structural caveat on all of the above.** The simulated foreground is exactly
+rank 6 by construction, so any clean with >= 6 modes removes it completely.
+This flatters PCA relative to real data, where the foreground is only
+approximately low rank. What the table measures is **signal loss, not
+foreground residual** — the right quantity for this comparison, but not a claim
+that PCA cleans the real sky this well. On real data PCA would also carry a
+foreground residual that the Gibbs run, by construction, does not.
+
+### Result, 2026-09-24 — confirmed for ground spill, confounded for leakage
+
+Both jobs `COMPLETED`, exit 0 (13875233 ground spill 1:59:17, 13875234 leakage
+2:02:35). Report: job 13878080.
+
+**Ground spill is the clean test and it confirms the hypothesis.**
+`groundspill_cube` builds the injected cube itself and never sees `fg_basis`,
+so the deflated arm was given *the same contaminated data* as `on` and differs
+only in the model basis.
+
+| | injected | recovered | of injected |
+|---|---|---|---|
+| `on` (undeflated) | 9.578e-4 | 7.321e-4 +- 9.9e-6 | 76.4% |
+| `ondeflated` | 9.578e-4 | 8.583e-4 +- 2.0e-6 | **89.6%** |
+
+The ceiling is `sqrt(1 - 0.184)` = 90.37%, and `g_true` was rescaled to
+8.656e-4 = 0.9037 x 9.578e-4, confirming the rescaling is correct. Recovery is
+99.2% of what the block could reach. Footprint P(k), ratio to true H I:
+
+| bin | k | control | ground spill `on` | ground spill `ondeflated` |
+|---|---|---|---|---|
+| 0 | 0.0684 | 0.13 | 15.29 | **0.12** |
+| 1 | 0.1599 | 0.59 | 0.77 | 0.59 |
+| 2 | 0.3740 | 0.86 | 0.87 | 0.86 |
+| 3 | 0.8748 | 0.99 | 1.00 | 0.99 |
+| 4 | 2.0462 | 1.17 | 1.15 | 1.15 |
+
+**The deflated arm is indistinguishable from the uncontaminated control in
+every bin.** Bin 0 goes 15.29 -> 0.12 against a control of 0.13. The bin-1
+excess (0.77 vs 0.59) also disappears — that excess was leftover ripple
+filling the foreground-degenerate deficit, not improved recovery.
+
+Two effects that were not predicted:
+
+- **Error bars shrink 5x** (9.9e-6 -> 2.0e-6). Deflation tightens the
+  posterior far more than it moves the mean, because the removed direction was
+  the one carrying almost all the `f`-`g` covariance.
+- **Runtime drops 3x**: 9.14 -> 2.86 s/sample, 6.3 h -> 2.0 h for 2500
+  samples. The near-degenerate direction was what LGMRES was struggling on.
+  Deflation is a conditioning fix as much as a bias fix.
+
+**So deflation should become the default**, as the test proposed. The module's
+advice changes from "omit the smooth template" to "project out the whole
+foreground span".
+
+### But the leakage arm does not test this, and neither did 1/f
+
+`build_truth` dispatches everything except ground spill through `build_basis`,
+which applies `--deflate`. So the deflated leakage run **injected a different
+signal** — drawn from the already-orthogonalised basis — rather than injecting
+the same leakage and modelling only its identifiable part. The tell is in the
+logs: `g_true` moved 7.420e-4 -> 7.408e-4, a ratio of 0.998, where ground
+spill's moved by the expected 0.904.
+
+Its numbers (bin 0 = 0.10, amplitudes 95.5 - 101.9%) are therefore close to
+tautological: model basis = injection basis, nothing degenerate to lose. They
+show a clean systematic is recoverable, not that deflating a realistic one
+helps.
+
+**The same wiring affects 1/f**, since `onef_basis` always deflates, in both
+truth and model. The table above already labels it "deflated by construction",
+but its 100% recovery was then used as evidence *for* deflation, which
+double-counts. **Ground spill is the only clean evidence.** It does hold, and
+it holds strongly, but the 1/f and leakage rows should not be cited as
+independent confirmation.
+
+**Fix before this goes in a paper:** build the truth from the *undeflated*
+basis and let `best_fit_amplitudes` project onto the deflated model basis —
+exactly what ground spill already does. Then re-run the leakage `ondeflated`
+arm. Roughly a two-line change in `build_truth` plus a 2 h job.
+
+### Reporting bugs found while checking the above
+
+Cosmetic, but they mislead anyone reading a run log:
+
+- **`absorbed` is a power fraction**, so `scripts/systematics_injection.py`
+  printing `ceiling on recoverable amplitude: 1 - absorbed` is wrong: for
+  ground spill it printed 81.6% where the amplitude ceiling is
+  `sqrt(0.816)` = 90.3%. `g_true` is computed by `best_fit_amplitudes` and is
+  unaffected, so only the printed line is wrong.
+- **For non-groundspill systematics `absorbed` is measured after deflation**,
+  because the probe comes from `build_basis` which applies `--deflate`. That
+  is why the deflated leakage log claims `absorbs 0.0%` where the undeflated
+  run correctly reported 18.6%.
+- **`scripts/systematics_report.py` prints nonsense percentages** for
+  templates whose true amplitude is ~1e-12 (`-3670896.7%`). Suppress the
+  column when `|true|` is below the error bar.
 
 ### Smaller things from the same run
 
@@ -850,6 +1060,34 @@ runtime at once, and is a much cheaper fix than reworking `S_samp`.
 ---
 
 ## Changelog
+
+### 2026-09-24 — deflation confirmed, and the PCA comparison settled
+
+- `--deflate` results read. Ground spill is the clean test and confirms the
+  hypothesis: 76.4% -> 89.6% recovery against a 90.4% ceiling, contaminated
+  bin 15.29 -> 0.12 against a control of 0.13, posterior width 5x smaller,
+  runtime 3x shorter (9.14 -> 2.86 s/sample).
+- Found that `build_truth` applies `--deflate` to the *injected* signal for
+  everything except ground spill, so the leakage and 1/f deflated arms do not
+  test the hypothesis. Recorded rather than silently fixed, since the fix
+  implies a re-run.
+- `scripts/pca_benchmark.py` — the like-for-like PCA comparison STATUS had
+  listed as owed, on the sampler's own k-bins, cube, estimator and truth. The
+  transfer function is computed exactly rather than by injection; the
+  injection estimator with Gaussian mocks is 1.3-1.8x biased, because the PCA
+  projector's action depends on phase structure a Gaussian mock does not
+  carry.
+- `systematics_report.py`: `--pca` overlays that benchmark; `--export-arms` /
+  `--import-arms` move one arm between machines as ~5 MB instead of 0.8 GB;
+  `box_dims` falls back to the value each run records, so the report no longer
+  needs `pyccl` (which is installed nowhere reachable, including ilifu).
+- Reporting fixes: the absorbed fraction is a *power* fraction, so the printed
+  amplitude ceiling is now its square root (81.6% -> 90.3%); the absorbed
+  probe is measured on undeflated templates, where under `--deflate` it had
+  been reporting 0.0% by construction; recovery percentages are suppressed
+  where the true amplitude is below the posterior width, instead of printing
+  -3670896.7%.
+
 
 ### 2026-09-03 — repository restructure
 

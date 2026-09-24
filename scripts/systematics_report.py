@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Report on a finished set of ``groundspill_injection.py`` arms.
+"""Report on a finished set of ``systematics_injection.py`` arms.
 
 Discovers every arm in an output directory, then writes convergence
 diagnostics, the recovered power spectrum, the recovered H I map, and the
@@ -40,6 +40,8 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from types import SimpleNamespace  # noqa: E402
+
 from imgibbs import kbins_from_crop, load, load_l2021_cube, survey_grid  # noqa: E402
 
 CROP = (slice(33, 103), slice(14, 59), slice(0, 250))
@@ -63,6 +65,7 @@ ORDER = ['clean', 'cleanfixedS', 'off', 'on', 'ondeflated', 'onfixedS']
 #: read as noise.
 BAND_ARMS = ('clean', 'on', 'ondeflated')
 INK, INK2, MUTED = '#0b0b0b', '#52514e', '#898781'
+PCA_COLOUR = '#b05ccc'
 GRID, AXIS = '#e1e0d9', '#c3c2b7'
 
 
@@ -75,7 +78,43 @@ def parse_args():
                    help='where to write figures (default: <out>/figures)')
     p.add_argument('--channel', type=int, default=125,
                    help='frequency channel for the map panels')
+    p.add_argument('--pca', metavar='NPZ', default=None,
+                   help='overlay the PCA benchmark written by '
+                        'scripts/pca_benchmark.py')
+    p.add_argument('--export-arms', metavar='DIR', default=None,
+                   help='write each gathered arm to DIR/<arm>_arm.npz (a few '
+                        'MB each) so a run held on another machine can be '
+                        'folded into a comparison without moving its cubes')
+    p.add_argument('--import-arms', metavar='NPZ', nargs='*', default=(),
+                   help='fold in arms exported by --export-arms elsewhere')
     return p.parse_args()
+
+
+# ---------------------------------------------------------------------------
+# Moving one arm between machines
+# ---------------------------------------------------------------------------
+# A comparison often straddles two machines: the baseline arms ran on the
+# laptop and the new arm ran on the cluster, and the sample cubes are ~0.8 GB
+# per arm with no easy route between them (ilifu blocks rsync on the login node
+# and the transfer node wants its own OTP). Everything the figures need is far
+# smaller than the cubes -- the per-sample P(k), the posterior-mean cube and
+# the trace -- so ship that instead. About 7 MB per arm.
+
+def export_arm(path, arm, r):
+    """Write one gathered arm to a small npz."""
+    np.savez_compressed(
+        path, arm=arm, pk=r['pk'], mean_cube=r['mean_cube'],
+        trace=r['trace'], burn=r['burn'], n_cubes=r['n_cubes'],
+        meta=json.dumps(r['meta']))
+
+
+def import_arm(path):
+    """Read one arm back. Returns ``(arm, res_entry)``."""
+    z = np.load(path, allow_pickle=False)
+    arm = str(z['arm'])
+    return arm, dict(meta=json.loads(str(z['meta'])), burn=int(z['burn']),
+                     n_cubes=int(z['n_cubes']), pk=z['pk'],
+                     mean_cube=z['mean_cube'], trace=z['trace'])
 
 
 # ---------------------------------------------------------------------------
@@ -94,11 +133,32 @@ def discover(out):
 
 
 def truth_cubes(meta):
-    """Rebuild the H I cube and footprint mask the run was built on."""
+    """Rebuild the H I cube and footprint mask the run was built on.
+
+    Only ``box_dims`` is ever read off the grid, and every run records the
+    value it actually used in its metadata. So when pyccl is missing -- it is
+    the one heavyweight dependency and is not needed to *read* a finished run
+    -- fall back to the recorded value rather than refusing to report. When
+    pyccl is present the two are cross-checked, which is a free guard against
+    a cosmology drift between running and reporting.
+    """
     real = load_l2021_cube()[CROP]
     flag = (real != 0).astype(float)
     hi = load('Fastbox_cube_cropped.npy')[:, :, :real.shape[2]]
-    grid = survey_grid(CROP, real.shape)
+    recorded = meta.get('box_dims')
+    try:
+        grid = survey_grid(CROP, real.shape)
+    except ModuleNotFoundError as exc:
+        if recorded is None:
+            raise
+        print(f'  [grid] {exc.name} unavailable; using the box_dims recorded '
+              f'by the run: {tuple(round(v, 1) for v in recorded)} Mpc')
+        return hi, flag, SimpleNamespace(box_dims=np.array(recorded, float))
+    if recorded is not None and not np.allclose(grid.box_dims, recorded,
+                                                rtol=1e-10):
+        raise SystemExit(
+            f'box_dims drifted since the run: recorded {recorded}, '
+            f'recomputed {list(grid.box_dims)}. The k-bins would not match.')
     return hi, flag, grid
 
 
@@ -212,6 +272,35 @@ def main():
         print(f'  {arm:9s}: {meta["n_samples"]} samples, burn {burn}, '
               f'{len(paths)} cubes for P(k)')
 
+    if args.export_arms:
+        os.makedirs(args.export_arms, exist_ok=True)
+        for arm, r in res.items():
+            dest = os.path.join(args.export_arms, f'{arm}_arm.npz')
+            export_arm(dest, arm, r)
+            print(f'  exported {arm} -> {dest}')
+
+    for path in args.import_arms:
+        arm, entry = import_arm(path)
+        if entry['pk'].shape[1] != len(sig_k):
+            raise SystemExit(f'{path}: {entry["pk"].shape[1]} k-bins, this run '
+                             f'has {len(sig_k)}; they are not comparable')
+        if not np.allclose(entry['meta']['sig_k'], sig_k, rtol=1e-10):
+            raise SystemExit(f'{path}: k-bin centres differ from this run; '
+                             f'the arms are not on the same grid')
+        res[arm] = entry
+        print(f'  {arm:9s}: imported from {path} ({entry["n_cubes"]} cubes)')
+    res = {a: res[a] for a in ORDER if a in res}
+
+    pca = None
+    if args.pca:
+        pca = dict(np.load(args.pca))
+        if not np.allclose(pca['sig_k'], sig_k, rtol=1e-10):
+            raise SystemExit(f'{args.pca}: PCA benchmark is on different '
+                             f'k-bins; recompute it against this run')
+        print(f'\n  PCA benchmark: {args.pca}, '
+              f'{int(pca["pca_modes"])} modes, T(k) = '
+              + ', '.join(f'{t:.3f}' for t in pca['T']))
+
     # ---- convergence --------------------------------------------------
     print('\nCONVERGENCE (from Pk_trace, per stored sample)')
     print('  A tau_int estimate needs a chain ~50x longer than tau to be '
@@ -253,18 +342,22 @@ def main():
         for i in range(truth_g.shape[0]):
             for j in range(truth_g.shape[1]):
                 t, m, sd = truth_g[i, j], g[:, i, j].mean(), g[:, i, j].std()
-                frac = f'{m / t:8.1%}' if abs(t) > 1e-12 else '       -'
+                # A ratio to a truth that is numerically zero is noise over
+                # noise: the quadrature templates carry t ~ 1e-12 and printed
+                # percentages in the millions. Score only where the truth is
+                # actually resolved above the posterior width.
+                frac = f'{m / t:8.1%}' if abs(t) > sd else '       -'
                 print(f'  {i:^7d} {j:^8d}  {t:+.3e}  {m:+.3e} +- {sd:.1e}'
                       f'  {frac}')
 
-    figures(args, res, sig_k, true_pk, hit, hi, flag, figdir)
+    figures(args, res, sig_k, true_pk, hit, hi, flag, figdir, pca)
 
 
 # ---------------------------------------------------------------------------
 # Figures
 # ---------------------------------------------------------------------------
 
-def figures(args, res, sig_k, true_pk, hit, hi, flag, figdir):
+def figures(args, res, sig_k, true_pk, hit, hi, flag, figdir, pca=None):
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
@@ -305,6 +398,17 @@ def figures(args, res, sig_k, true_pk, hit, hi, flag, figdir):
         ax.plot(sig_k, mid, color=COLOURS[arm], marker='o', ms=5,
                 label=LABELS[arm])
         axr.plot(sig_k, mid / true_pk, color=COLOURS[arm], marker='o', ms=5)
+
+    # The PCA benchmark, as the same quantity: the fraction of the true H I
+    # power the method retains. T(k) here is exact -- the known signal pushed
+    # through the same projector -- not an injection estimate, so it is a
+    # measurement rather than a curve with its own error budget.
+    if pca is not None:
+        ax.plot(sig_k, pca['T'] * true_pk, color=PCA_COLOUR, marker='s', ms=4,
+                lw=1.6, ls=(0, (5, 2)), zorder=5,
+                label=f'PCA clean, {int(pca["pca_modes"])} modes (benchmark)')
+        axr.plot(sig_k, pca['T'], color=PCA_COLOUR, marker='s', ms=4, lw=1.6,
+                 ls=(0, (5, 2)))
     ax.set_xscale('log'); ax.set_yscale('log')
     ax.set_xlabel(r'$k$ [Mpc$^{-1}$]'); ax.set_ylabel(r'$P(k)$ [K$^2$]')
     ax.set_title('Recovered power spectrum, footprint-restricted', loc='left')
@@ -335,6 +439,9 @@ def figures(args, res, sig_k, true_pk, hit, hi, flag, figdir):
         else:
             axz.plot(sig_k[keep], r['mid'][keep] / true_pk[keep],
                      color=COLOURS[arm], marker='o', ms=4, lw=1.2, alpha=0.75)
+    if pca is not None:
+        axz.plot(sig_k[keep], pca['T'][keep], color=PCA_COLOUR, marker='s',
+                 ms=4, lw=1.6, ls=(0, (5, 2)))
     axz.axhline(1.0, color=INK, lw=1.2)
     axz.set_xscale('log')
     axz.set_xlabel(r'$k$ [Mpc$^{-1}$]')

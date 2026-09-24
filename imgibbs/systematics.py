@@ -136,15 +136,26 @@ def deflate_foreground(templates, fg_basis):
     The part of a template that lies inside ``Uf``'s span is not a systematic
     the sampler can identify -- it is a direction where ``f`` and ``g`` are
     degenerate, and the split between them is decided by the priors rather
-    than by the data. Measured on the 2500-sample runs, leaving that direction
-    in costs a great deal: the two bases that carry it recovered 71-90% of the
-    injected amplitude and left an order of magnitude in the contaminated bin,
-    while the one basis built orthogonal to the foreground (``onef_basis``,
-    which deflates by construction) recovered 100% and left nothing.
+    than by the data.
+
+    **Measured, ground spill, 2500 samples per arm, identical injected cube.**
+    Leaving that direction in recovered 76.4% of the injected amplitude and
+    left 15x the true H I power in the contaminated bin. Deflating the model
+    basis recovered 89.6% -- against a ceiling of ``sqrt(1 - 0.184)`` = 90.4%,
+    so 99.2% of what was reachable -- and brought that bin to 0.12 against an
+    uncontaminated control of 0.13, with every other bin matching the control
+    as well. Deflation also shrank the posterior width 5x and cut the runtime
+    3x (9.14 -> 2.86 s/sample), because the degenerate direction was what the
+    linear solve was struggling on.
+
+    The 1/f and leakage runs are *not* independent confirmation of this: their
+    truth is drawn from the same deflated basis as their model, so they have
+    no degenerate part to lose. See ``docs/STATUS.md``.
 
     Deflation is cheap and well conditioned here. On the live grid a 17.5 MHz
-    ripple keeps 82% of its power, the Gram condition number moves 1.01 ->
-    1.01, and the residual overlap with the foreground is ~1e-15.
+    ripple keeps 82% of its *power* -- hence 90.3% of its amplitude, which is
+    the ceiling above -- the Gram condition number moves 1.01 -> 1.01, and the
+    residual overlap with the foreground is ~1e-15.
 
     Parameters
     ----------

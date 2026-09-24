@@ -17,7 +17,7 @@ signal and the foreground::
     python scripts/run_gibbs.py 6 --n-samples 500 --groundspill --gs-period 17.5
 
 That writes a ``g_trace`` alongside the others. To see what it buys on data
-with a known answer, run ``scripts/groundspill_injection.py`` instead.
+with a known answer, run ``scripts/systematics_injection.py`` instead.
 """
 
 from __future__ import annotations
