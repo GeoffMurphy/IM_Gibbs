@@ -10,6 +10,14 @@ Usage
     python scripts/run_gibbs.py 6 --n-samples 500
 
 The one required argument is the number of foreground (Legendre) modes.
+
+Add ``--groundspill`` to sample a standing-wave systematic jointly with the
+signal and the foreground::
+
+    python scripts/run_gibbs.py 6 --n-samples 500 --groundspill --gs-period 17.5
+
+That writes a ``g_trace`` alongside the others. To see what it buys on data
+with a known answer, run ``scripts/systematics_injection.py`` instead.
 """
 
 from __future__ import annotations
@@ -31,6 +39,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from imgibbs import (                                          # noqa: E402
     Us, construct_A, construct_b, construct_preconditioner,
     bin_it, kbins_from_crop, survey_grid, data_path, load, load_l2021_cube,
+    groundspill_basis, ripple_wavenumber,
     signal_covariance_sampler as SCS,
     foreground_covariance_sampler as FCS,
 )
@@ -68,6 +77,32 @@ def parse_args():
                    help='numpy random seed, for reproducible chains')
     p.add_argument('--no-flagging', action='store_true',
                    help='do not downweight flagged (zero) voxels')
+    g = p.add_argument_group(
+        'ground spill',
+        'Add a systematic block for a standing-wave ripple. The SMOOTH part '
+        'of ground spill is not modelled and does not need to be -- the '
+        'foreground block absorbs it completely (see imgibbs/systematics.py).')
+    g.add_argument('--groundspill', action='store_true',
+                   help='sample a ground-spill systematic jointly with s and f')
+    g.add_argument('--gs-period', type=float, default=17.5,
+                   help='standing-wave period in MHz (default: 17.5). This is '
+                        'the one parameter that is NOT sampled -- it enters '
+                        'nonlinearly. Check the reported k_par lands where you '
+                        'expect before trusting a run.')
+    g.add_argument('--gs-harmonics', type=int, default=1,
+                   help='number of ripple harmonics (default: 1)')
+    g.add_argument('--gs-order', type=int, default=1,
+                   help='polynomial order across the scan direction '
+                        '(default: 1, i.e. constant + gradient)')
+    g.add_argument('--gs-scan-axis', type=int, default=0, choices=(0, 1),
+                   help='map axis the telescope scanned along (default: 0, RA)')
+    g.add_argument('--gs-prior', type=float, default=1e-2,
+                   help='prior std on each ground-spill amplitude, K '
+                        '(default: 1e-2). This is a PRIOR, not a sampled '
+                        'covariance: g is a handful of numbers, so unlike F it '
+                        'cannot be estimated from a single draw. Set it from '
+                        'instrument characterisation, generously -- it is a '
+                        'nuisance parameter being marginalised over.')
     p.add_argument('--save-S', action='store_true',
                    help='also write the full S cube each iteration. S is '
                         'piecewise-constant over the k-bins, so Pk_trace plus '
@@ -165,6 +200,35 @@ def main():
     s_true = Us(data_cube, True)
 
     # ------------------------------------------------------------------
+    # Systematics: ground spill
+    # ------------------------------------------------------------------
+    if args.groundspill:
+        sys_basis = groundspill_basis(
+            grid.freqs, shape, period=args.gs_period,
+            n_harmonics=args.gs_harmonics, order=args.gs_order,
+            scan_axis=args.gs_scan_axis)
+        G = np.full(sys_basis.n_params, args.gs_prior ** 2)
+        g_mean = np.zeros(sys_basis.g_shape)
+        bandwidth = grid.freqs[-1] - grid.freqs[0]
+        # A ripple is a single k_parallel mode: all of its power goes into one
+        # bin rather than spreading. Print where, so a run that is about to
+        # contaminate the lowest signal bin says so before it starts.
+        k_ripple = [ripple_wavenumber(args.gs_period / m, bandwidth,
+                                      box_dims[2])
+                    for m in range(1, args.gs_harmonics + 1)]
+        print(f'groundspill  : {sys_basis.n_params} params '
+              f'({sys_basis.n_s} spatial x {sys_basis.n_t} spectral), '
+              f'prior std {args.gs_prior:g} K')
+        print(f'               period {args.gs_period:g} MHz -> k_par '
+              + ', '.join(f'{k:.4f}' for k in k_ripple) + ' Mpc^-1')
+        for k in k_ripple:
+            bin_i = int(np.argmin(np.abs(sig_k - k)))
+            print(f'               k = {k:.4f} is nearest bin {bin_i} '
+                  f'(k = {sig_k[bin_i]:.4f})')
+    else:
+        sys_basis = G = g_mean = None
+
+    # ------------------------------------------------------------------
     # Noise
     # ------------------------------------------------------------------
     N = (T_SYS**2) / (DEL_NU * DEL_T)
@@ -179,7 +243,8 @@ def main():
     rfft_shape = s_true.shape
     f_len = f_true.size
     f_shape = f_true.shape
-    total_len = 2 * rfft_len + f_len
+    g_len = 0 if sys_basis is None else sys_basis.n_params
+    total_len = 2 * rfft_len + f_len + g_len
 
     # ------------------------------------------------------------------
     # Starting points
@@ -193,17 +258,20 @@ def main():
     F = np.diag(FCS(f_init.reshape(-1, n_modes)))
 
     x = np.concatenate([s_mean.real.flatten(), s_mean.imag.flatten(),
-                        f_mean.flatten()])
+                        f_mean.flatten()]
+                       + ([g_mean.flatten()] if sys_basis is not None else []))
 
     def A_flat(vec):
         return construct_A(vec, S, Nw_inv, F, w, evecs, rfft_len, rfft_shape,
-                           f_len, f_shape, shape).flatten()
+                           f_len, f_shape, shape,
+                           sys_basis=sys_basis, G=G).flatten()
 
     L = LinearOperator(matvec=A_flat, rmatvec=A_flat, shape=(len(x), len(x)))
 
     precond_apply = construct_preconditioner(S, N_inv_scalar, F, evecs,
                                              rfft_len, rfft_shape, f_len,
-                                             f_shape, shape)
+                                             f_shape, shape,
+                                             sys_basis=sys_basis, G=G)
 
     # ------------------------------------------------------------------
     # Sampling
@@ -214,6 +282,12 @@ def main():
                    'n_modes': n_modes, 'n_samples': args.n_samples,
                    'T_sys': T_SYS, 'del_nu_Hz': DEL_NU, 'del_t_s': DEL_T,
                    'tol': args.tol, 'seed': args.seed, 'flagging': flagging,
+                   'groundspill': bool(args.groundspill),
+                   'gs_period_MHz': args.gs_period if args.groundspill else None,
+                   'gs_harmonics': args.gs_harmonics if args.groundspill else None,
+                   'gs_order': args.gs_order if args.groundspill else None,
+                   'gs_scan_axis': args.gs_scan_axis if args.groundspill else None,
+                   'gs_prior_K': args.gs_prior if args.groundspill else None,
                    'sig_k': sig_k.tolist(), **kbin_meta}, fh, indent=2,
                   default=str)
 
@@ -230,9 +304,12 @@ def main():
         ws = np.fft.rfftn(np.random.normal(size=shape), norm='ortho').flatten()
         wf = np.random.normal(size=f_shape)
         wd = np.random.normal(size=shape).flatten()
+        wg = (None if sys_basis is None
+              else np.random.normal(size=sys_basis.g_shape))
 
         b = construct_b(S, N_inv, F, w, s_mean, f_mean, evecs, data_cube,
-                        ws, wf, wd, shape)
+                        ws, wf, wd, shape, sys_basis=sys_basis, G=G,
+                        wg=wg, g_mean=g_mean)
 
         M_inv = LinearOperator((total_len, total_len), matvec=precond_apply)
         x, exit_code = lgmres(L, b.flatten(), x0=x0, rtol=args.tol, atol=0,
@@ -264,6 +341,14 @@ def main():
             np.save(os.path.join(sample_dir, f'S_trace{rr}{suffix}.npy'), S)
 
         # --- F step: inverse-Wishart draw ---
+        # --- g: no covariance step. G is a prior, not a sampled quantity --
+        # a single vector of n_params numbers does not identify its own
+        # covariance the way Npix foreground amplitude vectors identify F.
+        if sys_basis is not None:
+            g_off = 2 * rfft_len + f_len
+            np.save(os.path.join(sample_dir, f'g_trace{rr}{suffix}.npy'),
+                    x[g_off:g_off + g_len].reshape(sys_basis.g_shape))
+
         f_ms = x[2 * rfft_len:2 * rfft_len + f_len].reshape(f_shape).real
         f_centered = (f_ms - f_mean).reshape((shape[0] * shape[1], n_modes))
         F = np.diag(FCS(f_centered))
@@ -271,7 +356,8 @@ def main():
 
         precond_apply = construct_preconditioner(S, N_inv_scalar, F, evecs,
                                                  rfft_len, rfft_shape, f_len,
-                                                 f_shape, shape)
+                                                 f_shape, shape,
+                                                 sys_basis=sys_basis, G=G)
         gc.collect()
 
     elapsed = time.time() - start
