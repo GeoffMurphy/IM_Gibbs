@@ -31,6 +31,18 @@ drawn from an inverse-Wishart because there are ``Npix`` independent amplitude
 vectors to estimate it from; ``g`` is a single vector of a handful of numbers,
 so its covariance is not identified by the data and has to come from
 instrument characterisation. See ``imgibbs/systematics.py``.
+
+Beam
+----
+Passing a :class:`imgibbs.beam.Beam` as ``beam`` convolves the sky -- signal
+and foreground, not the systematic -- with a chromatic primary beam::
+
+    d = w * (B Us s + B Uf f + Ug g) + n
+
+``B`` is symmetric, so the adjoint of ``B Us`` is ``Us^T B`` and the same
+call serves both ways. ``beam=None`` leaves the beamless system untouched:
+the beam is a separate code path, not a multiplication by one. See
+``imgibbs/beam.py``.
 """
 
 import numpy as np
@@ -88,12 +100,15 @@ def Us(s, transpose):
 
 
 def construct_A(x, S, Nw_inv, F, w, evecs, rfft_len, rfft_shape, f_len,
-                f_shape, shape, sys_basis=None, G=None):
+                f_shape, shape, sys_basis=None, G=None, beam=None):
     """Evaluate the LHS of ``Ax = b`` as a matrix-vector product.
 
     With ``sys_basis`` supplied, ``x`` carries a fourth block ``g`` of length
     ``sys_basis.n_params`` and the returned vector grows to match. The
     signal-foreground part of the product is unchanged.
+
+    With ``beam`` supplied, the signal and foreground enter the data through
+    ``B``; the systematic does not.
     """
     x0_recon = (x[0:rfft_len].reshape(rfft_shape)
                 + x[rfft_len:2 * rfft_len].reshape(rfft_shape) * 1j)
@@ -104,6 +119,11 @@ def construct_A(x, S, Nw_inv, F, w, evecs, rfft_len, rfft_shape, f_len,
 
     # Take only the real part for the foreground amplitudes
     x1_recon = x1_recon.real
+
+    if beam is not None:
+        return _construct_A_beam(x, x0_recon, x1_recon, S, Nw_inv, F, evecs,
+                                 rfft_len, rfft_shape, f_len, shape,
+                                 sys_basis, G, beam)
 
     A00 = (((1 / S) * x0_recon.flatten()).reshape(rfft_shape)
            + Us(((Nw_inv) * Us(x0_recon, False).flatten()).reshape(shape), True))
@@ -143,8 +163,42 @@ def construct_A(x, S, Nw_inv, F, w, evecs, rfft_len, rfft_shape, f_len,
                            Ax1.real.flatten(), Ax2.real.flatten()])
 
 
+def _construct_A_beam(x, x0_recon, x1_recon, S, Nw_inv, F, evecs, rfft_len,
+                      rfft_shape, f_len, shape, sys_basis, G, beam):
+    """``construct_A`` with the sky passed through the beam.
+
+    Written as "model, weight, adjoint" rather than block by block: the
+    beamed sky ``B (Us s + Uf f)`` is formed once, the systematic added
+    outside the beam, the weighted residual pulled back through each block's
+    adjoint. Two beam applications per product instead of eight.
+    """
+    sky = beam.apply(Us(x0_recon, False).flatten()
+                     + Uf(evecs, x1_recon, False))
+    if sys_basis is not None:
+        g_off = 2 * rfft_len + f_len
+        x2_recon = x[g_off:g_off + sys_basis.n_params].real
+        sky = sky + sys_basis.apply(x2_recon)
+
+    r = Nw_inv * sky
+    rB = beam.apply(r).reshape(shape)
+
+    Ax0 = (((1 / S) * x0_recon.flatten()).reshape(rfft_shape)
+           + Us(rB, True))
+    Ax1 = (1 / F) * x1_recon + Uf(evecs, rB, True)
+    out = [Ax0.real.flatten(), Ax0.imag.flatten(), Ax1.real.flatten()]
+
+    if sys_basis is not None:
+        Ax2 = ((1 / G).reshape(sys_basis.g_shape)
+               * x2_recon.reshape(sys_basis.g_shape)
+               + sys_basis.adjoint(r))
+        out.append(Ax2.real.flatten())
+
+    return np.concatenate(out)
+
+
 def construct_preconditioner(S, N_inv_scalar, F, evecs, rfft_len, rfft_shape,
-                             f_len, f_shape, shape, sys_basis=None, G=None):
+                             f_len, f_shape, shape, sys_basis=None, G=None,
+                             beam=None):
     """Build a block-diagonal preconditioner ``M^-1`` for ``Ax = b``.
 
     Drops the off-diagonal (signal-foreground coupling) blocks of A, keeping::
@@ -170,6 +224,14 @@ def construct_preconditioner(S, N_inv_scalar, F, evecs, rfft_len, rfft_shape,
         Foreground basis, orthonormal rows.
     rfft_len, rfft_shape, f_len, f_shape, shape :
         Shape metadata for unpacking the solution vector x.
+    beam : Beam, optional
+        With a beam the signal block becomes ``1 / (1/S + N_inv <|B|^2>)``,
+        where ``<|B|^2>`` is the band average per ``k_perp`` -- the exact
+        diagonal of ``Us^T B^2 Us``, dropping the ``k_parallel`` mixing a
+        chromatic beam introduces. The foreground block stays *exact* for
+        uniform noise: ``Uf^T B^2 Uf`` is diagonal in ``k_perp``, so it is
+        one small ``n_modes x n_modes`` matrix per transverse mode, inverted
+        once and applied in transverse Fourier space.
 
     Returns
     -------
@@ -178,12 +240,30 @@ def construct_preconditioner(S, N_inv_scalar, F, evecs, rfft_len, rfft_shape,
     """
     # Signal block: truncate S from full fftn shape to rfft shape.
     S_rfft = S.reshape(shape)[:, :, :shape[2] // 2 + 1].flatten()
-    M00_inv = 1.0 / (1.0 / S_rfft + N_inv_scalar)
-
-    # Foreground block: small (n_modes x n_modes) matrix, invert once.
     n_modes = evecs.shape[0]
-    M11 = np.diag(1.0 / F[:n_modes]) + N_inv_scalar * (evecs @ evecs.T)
-    M11_inv = np.linalg.inv(M11)
+    if beam is None:
+        M00_inv = 1.0 / (1.0 / S_rfft + N_inv_scalar)
+
+        # Foreground block: small (n_modes x n_modes) matrix, invert once.
+        M11 = np.diag(1.0 / F[:n_modes]) + N_inv_scalar * (evecs @ evecs.T)
+        M11_inv = np.linalg.inv(M11)
+
+        def apply_f(f):
+            return (f @ M11_inv.T).flatten()
+    else:
+        M00_inv = 1.0 / (1.0 / S_rfft
+                         + N_inv_scalar * beam.signal_diagonal(rfft_shape))
+
+        # One (n_modes x n_modes) block per transverse mode.
+        b2 = beam.full_transfer() ** 2                          # (Nx, Ny, Nz)
+        M11 = (np.diag(1.0 / F[:n_modes])
+               + N_inv_scalar * np.einsum('mz,xyz,nz->xymn', evecs, b2, evecs))
+        M11_inv = np.linalg.inv(M11)                  # (Nx, Ny, n_modes, n_modes)
+
+        def apply_f(f):
+            fk = fft.fft2(f, axes=(0, 1), norm='ortho')
+            out = np.einsum('xymn,xyn->xym', M11_inv, fk)
+            return fft.ifft2(out, axes=(0, 1), norm='ortho').real.flatten()
 
     # Systematic block: n_params x n_params, and n_params is a handful. The
     # Gram matrix comes from SystematicBasis.gram(), which factorises it
@@ -199,7 +279,7 @@ def construct_preconditioner(S, N_inv_scalar, F, evecs, rfft_len, rfft_shape,
         re_s = M00_inv * x[0:rfft_len]
         im_s = M00_inv * x[rfft_len:2 * rfft_len]
         f = x[2 * rfft_len:2 * rfft_len + f_len].reshape(f_shape)
-        f_out = (f @ M11_inv.T).flatten()
+        f_out = apply_f(f)
         if sys_basis is None:
             return np.concatenate([re_s, im_s, f_out])
         g_out = M22_inv @ x[g_off:g_off + n_g]
@@ -209,7 +289,8 @@ def construct_preconditioner(S, N_inv_scalar, F, evecs, rfft_len, rfft_shape,
 
 
 def construct_b(S, N_inv, F, w, s_mean, f_mean, evecs, data_cube, ws, wf, wd,
-                shape, sys_basis=None, G=None, wg=None, g_mean=None):
+                shape, sys_basis=None, G=None, wg=None, g_mean=None,
+                beam=None):
     """Build the RHS of ``Ax = b``.
 
     Combines the data term, the prior-mean terms, and the omega (``ws``,
@@ -220,11 +301,20 @@ def construct_b(S, N_inv, F, w, s_mean, f_mean, evecs, data_cube, ws, wf, wd,
     standard normal, shape ``sys_basis.g_shape``. ``g_mean`` defaults to zero:
     a systematic has no known sign, so the prior is centred on "absent" and
     the data has to argue it into existence.
+
+    With ``beam`` supplied, the weighted data and its omega term reach the
+    signal and foreground rows through ``B`` (``B^T = B``), and the
+    systematic row directly.
     """
     rfft_shape = np.shape(s_mean)
 
     # Truncate S from full fftn shape (Nx,Ny,Nz) to rfft shape (Nx,Ny,Nz//2+1)
     S = S.reshape(shape)[:, :, :shape[2] // 2 + 1].flatten()
+
+    if beam is not None:
+        return _construct_b_beam(S, N_inv, F, w, s_mean, f_mean, evecs,
+                                 data_cube, ws, wf, wd, shape, rfft_shape,
+                                 sys_basis, G, wg, g_mean, beam)
 
     b0 = (Us(((N_inv) * w * data_cube.flatten()
               + (np.sqrt(N_inv)) * np.sqrt(w) * wd).reshape(shape), True)
@@ -253,3 +343,31 @@ def construct_b(S, N_inv, F, w, s_mean, f_mean, evecs, data_cube, ws, wf, wd,
 
     return np.concatenate([b0.real.flatten(), b0.imag.flatten(),
                            b1.real.flatten(), b2.real.flatten()])
+
+
+def _construct_b_beam(S, N_inv, F, w, s_mean, f_mean, evecs, data_cube, ws, wf,
+                      wd, shape, rfft_shape, sys_basis, G, wg, g_mean, beam):
+    """``construct_b`` with the sky passed through the beam."""
+    r = (N_inv) * w * data_cube.flatten() + (np.sqrt(N_inv)) * np.sqrt(w) * wd
+    rB = beam.apply(r).reshape(shape)
+
+    b0 = (Us(rB, True)
+          + ((1 / S) * s_mean.flatten()).reshape(rfft_shape)
+          + ((1 / np.sqrt(S)) * ws).reshape(rfft_shape))
+    b1 = (Uf(evecs, rB, True)
+          + ((1 / F) * f_mean)
+          + ((1 / np.sqrt(F)) * wf))
+    out = [b0.real.flatten(), b0.imag.flatten(), b1.real.flatten()]
+
+    if sys_basis is not None:
+        G = np.asarray(G).reshape(sys_basis.g_shape)
+        if g_mean is None:
+            g_mean = np.zeros(sys_basis.g_shape)
+        if wg is None:
+            wg = np.zeros(sys_basis.g_shape)
+        b2 = (sys_basis.adjoint(r)
+              + (1 / G) * np.asarray(g_mean).reshape(sys_basis.g_shape)
+              + (1 / np.sqrt(G)) * np.asarray(wg).reshape(sys_basis.g_shape))
+        out.append(b2.real.flatten())
+
+    return np.concatenate(out)

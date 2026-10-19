@@ -4,7 +4,7 @@ The working record for this repository: what the current configuration is, why
 it is that way, and what is still wrong with it. Read this before trusting a
 number out of here.
 
-Last substantive update: 2026-09-23.
+Last substantive update: 2026-10-19 (the beam).
 
 ---
 
@@ -603,15 +603,15 @@ order they are worth doing.
    and the sampler (0.13) lose the same ~85%. As written the README overstates
    it.
 
-4. **The beam.** The agreed next step, deliberately not started — see "No beam
-   in the MODEL" below. Note that a chromatic beam turns spatial structure
-   into spectral structure, which is the assumption every absorbed-fraction
-   number in `imgibbs/systematics.py` rests on, so those tables need
-   re-measuring once `B` exists.
+4. **The beam.** Added 2026-10-19 on branch `beam` — see "The beam in the
+   MODEL" below. The feared result did not happen: a *smooth* chromatic beam
+   leaves the absorbed-fraction tables standing. The new problem is the `S`
+   step, which the beam starves of data above the lowest bin.
 
 ### Where things live
 
-- Branch `systematics`, unmerged. `main` contains none of this.
+- The systematics work was merged to `main` as PR #1 on 2026-09-25. The beam
+  is on branch `beam`, not yet merged.
 - ilifu: `~/imgibbs-sys`, run with `~/ska/.venv`, always through Slurm — the
   login node is throttled and blocks `rsync`. The transfer node
   (`ilifu-transfer`) needs its own OTP, so bulk cube transfer needs a human at
@@ -915,12 +915,19 @@ Cosmetic, but they mislead anyone reading a run log:
   numbers; it is noise-dominated and always has been.
 - Runtimes on ilifu, 8 CPUs: 1.4-9.1 s/sample depending on arm.
 
-### No beam in the MODEL — the next thing to add
+### The beam in the MODEL — added 2026-10-19, branch `beam`
 
 Distinct from "No beam in the simulation" below, which is about the truth
-curve. This is about the forward model itself:
+curve. This is the forward model itself:
 
     d = w * (B Us s + B Uf f + Ug g) + n
+
+`imgibbs/beam.py` plus a `beam=` argument on `construct_A`, `construct_b` and
+`construct_preconditioner`; `scripts/run_gibbs.py --beam-fwhm DEG
+[--beam-nu-ref MHz] [--beam-index 1]`. `beam=None` is the default and is a
+separate code path, not a multiplication by one, so the published sampler is
+untouched — `tests/test_beam.py` pins that with exact equality, and pins that
+an identity beam reproduces the beamless operator to rounding.
 
 **Which components B acts on is the structurally important part**, and it is
 not "all of them":
@@ -933,48 +940,123 @@ not "all of them":
 | polarisation leakage | **no** (own operator) | leakage *is* a beam effect — the leakage beam, not the total-intensity one |
 | noise `n` | **no** | |
 
-So the systematics block sits **outside** B. That is a good reason it belongs
-where it is, and it means adding a beam does not disturb it.
+`S` is now the power spectrum of the **unconvolved** sky, so it compares
+directly with the FastBox truth curve and `S_starting_point_cropped.npy`
+needs no change.
 
-**The chromaticity is the point, not the smoothing.** For a 13.5 m dish at
-1.22 lambda/D the FWHM runs 1.60 deg at 970.9 MHz to 1.52 deg at 1023.0 MHz —
-a 5.4% change across the band. A frequency-dependent beam turns *spatial*
-structure into *spectral* structure, which is the standard mode-mixing
-problem, and it directly undermines the assumption everything in the
-systematics work rests on: that the foreground is smooth in frequency in each
-pixel. It is smooth per pixel only for an achromatic beam. With a chromatic
-one the foreground acquires spectral structure proportional to its own spatial
-gradients, and **the absorbed-fraction table above would have to be
-re-measured.** Nothing in that table survives a chromatic beam unexamined.
+**The operator.** `B` is diagonal in `(k_perp, nu)`: `rfftn` over the two
+transverse axes, multiply per channel, transform back. Real, even transfer
+function, so `B^T = B` and one call serves both ways. Periodic boundaries,
+matching the periodic box `s` lives on. Peak-normalised, `B(k_perp=0) = 1`.
+`gaussian_beam` builds `FWHM(nu) = fwhm_ref (nu_ref/nu)^index`; the `Beam`
+class takes an arbitrary `B(k_perp, nu)`, so a measured beam drops in without
+code changes. ~15 ms per application on the live grid. No default FWHM is
+shipped on purpose — take it from a measured MeerKAT beam, not
+`1.22 lambda/D`. (1.55 deg at band centre, used below, is the
+`1.22 lambda/D` figure — a placeholder for scale, not a recommendation.)
 
-At 1.55 deg the beam is 44.6 Mpc, 5.2 voxels, and cuts off around
-`k_perp ~ 0.141 Mpc^-1` — i.e. between bin 0 (0.068) and bin 1 (0.160). It
-suppresses transverse power across the whole range the measurement lives in.
+#### Measured, 2026-10-19
 
-> **The "~1 deg FWHM, 26.6 Mpc, 3.3 voxels" in the simulation item below does
-> not match this band.** 1 deg is about right near the top of L band; at
-> 970-1023 MHz the same formula gives ~1.55 deg. Neither number should be
-> trusted for real work — take the FWHM from the MeerKLASS beam model rather
-> than from `1.22 lambda/D`, which assumes uniform illumination and is known
-> to be narrow for a tapered feed.
+**1. A smooth chromatic beam does NOT break the smooth-foreground assumption.**
+This section previously predicted it would, and that every absorbed-fraction
+number would need re-measuring. Measured with `chromatic_leakage` on the real
+cube's own 6-mode Legendre fit (fg rms 3.40 K), 1.55 deg at band centre:
 
-**Implementation.** B is diagonal in `(k_perp, nu)`: transform the two
-transverse axes, multiply per channel, transform back. Cheap as an operator.
-It is **not** diagonal in the 3D Fourier basis, because the frequency
-dependence mixes `k_parallel` — so `construct_preconditioner`'s
-`M00_inv = 1/(1/S + N_inv)`, which assumes `Us` is unitary, stops being right.
-This is the same class of problem as `N_inv_scalar` not being allowed to carry
-the mask (see the note on that above): the exact operator is dense in the
-basis the preconditioner needs diagonal. The usual approximation is a
-band-averaged `|B(k_perp)|^2` on the diagonal.
+| beam | distortion it causes | left outside the foreground span |
+|---|---|---|
+| achromatic | — | 0 (to rounding) |
+| chromatic, `FWHM ∝ 1/nu`, vs achromatic | 6.56 mK rms | **0.0007 mK** (n=6), 0.0033 (n=3), 0.13 (n=2) |
+| chromatic + 2% width ripple, 20 MHz period | — | **5.3 mK** |
 
-**Related but separate work.** Geoff is investigating beam effects on
-*observational* data in a separate run out of `Sampling Nb/` — that is where
-the numbers for what the beam actually does should come from, rather than from
-a formula here. There is also a distinct MeerKLASS ripple-beam-correction
-project in `museek` (UHF band, `~/beam_correction/NOTES.md`) aimed at a
-separate paper; the physics overlaps, the code does not. Check the boundary
-before building anything here.
+Simulated H I rms is 0.86 mK. A Gaussian whose width scales as a power law is
+itself smooth in frequency, so the product with a smooth foreground stays
+smooth and the Legendre basis takes 99.99% of it. What *does* break the
+assumption is spectral structure in the beam — a ripple in the beam width
+leaks 6x the H I. That is exactly the MeerKLASS ripple-beam problem the
+`museek` beam-correction work is about, which makes the boundary between the
+two efforts concrete: the measured ripple belongs in a `Beam` transfer
+function here; this repository does not need to model it from first
+principles. The systematics absorbed-fraction tables stand for a smooth beam.
+
+**2. The beam starves the `S` step of data.** Fraction of modes per bin where
+the data outweigh the prior, `N^-1 <w> <|B|^2> > 1/S`, with `S` from
+`S_starting_point_cropped.npy`:
+
+| bin | k | modes | no beam | beam (1.55 deg) |
+|---|---|---|---|---|
+| 1 | 0.068 | 898 | 1.000 | 0.425 |
+| 2 | 0.160 | 12474 | 1.000 | 0.038 |
+| 3 | 0.374 | 106814 | 1.000 | 0.006 |
+| 4 | 0.875 | 209276 | 0.000 | 0.000 |
+| 5 | 2.046 | 454834 | 0.000 | 0.000 |
+
+The beam cuts off near `k_perp ~ 0.14`, and every |k| shell above bin 1 is
+almost all transverse modes past that. In a shell where 96–99% of modes are
+prior-dominated, each Gibbs `s` draw fills them from the current `S`, and the
+inverse-gamma step then re-estimates `S` mostly from its own draw — a near
+random walk. A 3-sample smoke run (seed 1) shows bins 1–2 climbing faster
+with the beam than without (bin 1: 7.0e-5 → 2.1e-4 → 4.2e-4, vs 5.1e-5 →
+9.2e-5 → 1.0e-4); three samples cannot separate that from burn-in, but it is
+the direction this predicts. **This has to be settled before a beamed run is
+trusted.** Options, roughly in order of cost: estimate `S` only from modes
+with `<|B|^2>` above a threshold (the `N_k` in the inverse-gamma draw then
+changes); bin in `(k_perp, k_par)` so the beam-killed modes sit in their own
+bins; or sample the *beamed* power `|B|^2 S` and deconvolve afterwards. Note
+the overlap with the student's `S_samp` task — same block, related cause.
+
+Do **not** start a beamed run from flat `S = 1e30`. That trick relies on the
+data constraining every mode (see "Gibbs flat-S burn-in"); a mode with
+`|B|^2 ~ 1e-21` at the transverse Nyquist is constrained to a posterior
+variance ~1e15 K² and would hold `S` up indefinitely. `run_gibbs.py` starts
+from `S_starting_point_cropped.npy`, which is fine.
+
+**3. The solver slows ~20x, and it is the mask, not the beam.** One solve, live grid,
+real mask, `rtol=1e-6`: **33 matvecs without the beam, 653 with it** (20x);
+per matvec only 86 → 113 ms. Wall clock 9 → 45 s/sample in the smoke run
+(LGMRES warm-starts from the previous sample, so it is less than 20x).
+Isolated by switching the mask and the chromaticity independently (same
+system, `rtol=1e-6`, capped at 700 matvecs):
+
+| | no mask | real mask |
+|---|---|---|
+| no beam | 26 | 33 |
+| achromatic beam | 25 | **> 700** |
+| chromatic beam | 20 | **653 / > 700** (two runs) |
+
+So the beam preconditioner is fine and chromaticity is irrelevant — it is
+**beam x mask**. The likely mechanism: 1285 of 3150 pixels have no data at
+all. Without a beam their foreground amplitudes decouple and are pure prior.
+With one they couple, through `B`, to data within a beam width of the
+footprint edge, and deep inside the empty region they are still pure prior.
+The transverse-Fourier preconditioner uses the scalar `N_inv` — uniform
+coverage — so for low-`k_perp` modes it assumes data the empty region does
+not have, wrong by up to a factor `N_inv F`. Same family as `N_inv_scalar`
+not being allowed to carry the mask (see the preconditioner note above).
+Candidates: a coverage-aware term built from the beam-smoothed `w`, or
+dropping the `f` amplitudes of pixels more than a few beam widths from any
+data (they are prior-only, and they are the inpainting that is already ~200x
+outside its intended job). **Measure samples-to-convergence, not matvecs,
+before keeping any change** — see the preconditioner trade-off.
+
+The foreground block of the preconditioner is **exact** for uniform noise —
+`Uf^T B^2 Uf` is diagonal in `k_perp`, one `n_modes x n_modes` block per
+transverse mode — and the signal block is the exact diagonal
+(band-averaged `|B(k_perp)|^2`) of `Us^T B^2 Us`, exact outright for an
+achromatic beam. Both are pinned in the tests.
+
+**4. Deflation was not revisited.** `deflate_foreground` projects the span of
+`Uf` out of a systematic's templates. With a beam the model's foreground span
+is `B Uf`; by (1) the two differ negligibly for a smooth beam, but a rippled
+measured beam would need the deflation done against `B Uf`.
+
+**Related but separate work — check before extending this.** Geoff's
+observational run (`gibbs_beam`, out of `Sampling Nb/`) and the MSc student's
+beam (added on ilifu since 2026-09-13, see `~/handover/OPEN_ITEMS.md` item 7)
+are not visible from here and were not consulted. The FWHM and any measured
+`B(k_perp, nu)` should come from them, not from a formula; and if the
+student's version is meant to be the one that lands, this branch should be
+reconciled with it rather than merged over it. The `museek` ripple-beam
+project (UHF, `~/beam_correction/NOTES.md`) shares physics, not code.
 
 ### Smaller open items
 

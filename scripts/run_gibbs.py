@@ -18,6 +18,14 @@ signal and the foreground::
 
 That writes a ``g_trace`` alongside the others. To see what it buys on data
 with a known answer, run ``scripts/systematics_injection.py`` instead.
+
+Add ``--beam-fwhm`` to put a chromatic Gaussian primary beam on the sky
+(signal and foreground, not the systematic)::
+
+    python scripts/run_gibbs.py 6 --beam-fwhm 1.5 --beam-nu-ref 1000
+
+``S`` is then the power spectrum of the *unconvolved* sky. Take the FWHM from
+a measured MeerKAT beam, not from ``1.22 lambda/D``.
 """
 
 from __future__ import annotations
@@ -39,7 +47,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from imgibbs import (                                          # noqa: E402
     Us, construct_A, construct_b, construct_preconditioner,
     bin_it, kbins_from_crop, survey_grid, data_path, load, load_l2021_cube,
-    groundspill_basis, ripple_wavenumber,
+    groundspill_basis, ripple_wavenumber, gaussian_beam, beam_fwhm,
     signal_covariance_sampler as SCS,
     foreground_covariance_sampler as FCS,
 )
@@ -103,6 +111,21 @@ def parse_args():
                         'cannot be estimated from a single draw. Set it from '
                         'instrument characterisation, generously -- it is a '
                         'nuisance parameter being marginalised over.')
+    bm = p.add_argument_group(
+        'beam',
+        'Convolve the sky (signal and foreground) with a chromatic Gaussian '
+        'primary beam, FWHM(nu) = fwhm * (nu_ref/nu)^index. Off unless '
+        '--beam-fwhm is given. The systematic block stays outside the beam.')
+    bm.add_argument('--beam-fwhm', type=float, default=None,
+                    help='beam FWHM in degrees at --beam-nu-ref. Take it from '
+                         'a measured beam, not 1.22 lambda/D.')
+    bm.add_argument('--beam-nu-ref', type=float, default=None,
+                    help='reference frequency for --beam-fwhm, MHz '
+                         '(default: band centre)')
+    bm.add_argument('--beam-index', type=float, default=1.0,
+                    help='chromatic index (default: 1, diffraction scaling). '
+                         '0 gives an achromatic beam -- smoothing without '
+                         'mode mixing, useful as a control.')
     p.add_argument('--save-S', action='store_true',
                    help='also write the full S cube each iteration. S is '
                         'piecewise-constant over the k-bins, so Pk_trace plus '
@@ -229,6 +252,22 @@ def main():
         sys_basis = G = g_mean = None
 
     # ------------------------------------------------------------------
+    # Beam
+    # ------------------------------------------------------------------
+    if args.beam_fwhm is not None:
+        nu_ref = (args.beam_nu_ref if args.beam_nu_ref is not None
+                  else float(grid.freqs.mean()))
+        beam = gaussian_beam(grid.freqs, shape, args.beam_fwhm, nu_ref,
+                             index=args.beam_index)
+        fw = beam_fwhm(grid.freqs[[0, -1]], args.beam_fwhm, nu_ref,
+                       args.beam_index)
+        print(f'beam         : Gaussian, FWHM {fw[0]:.3f} deg at '
+              f'{grid.freqs[0]:.1f} MHz -> {fw[1]:.3f} deg at '
+              f'{grid.freqs[-1]:.1f} MHz (index {args.beam_index:g})')
+    else:
+        beam = nu_ref = None
+
+    # ------------------------------------------------------------------
     # Noise
     # ------------------------------------------------------------------
     N = (T_SYS**2) / (DEL_NU * DEL_T)
@@ -264,14 +303,15 @@ def main():
     def A_flat(vec):
         return construct_A(vec, S, Nw_inv, F, w, evecs, rfft_len, rfft_shape,
                            f_len, f_shape, shape,
-                           sys_basis=sys_basis, G=G).flatten()
+                           sys_basis=sys_basis, G=G, beam=beam).flatten()
 
     L = LinearOperator(matvec=A_flat, rmatvec=A_flat, shape=(len(x), len(x)))
 
     precond_apply = construct_preconditioner(S, N_inv_scalar, F, evecs,
                                              rfft_len, rfft_shape, f_len,
                                              f_shape, shape,
-                                             sys_basis=sys_basis, G=G)
+                                             sys_basis=sys_basis, G=G,
+                                             beam=beam)
 
     # ------------------------------------------------------------------
     # Sampling
@@ -288,6 +328,10 @@ def main():
                    'gs_order': args.gs_order if args.groundspill else None,
                    'gs_scan_axis': args.gs_scan_axis if args.groundspill else None,
                    'gs_prior_K': args.gs_prior if args.groundspill else None,
+                   'beam_fwhm_deg': args.beam_fwhm,
+                   'beam_nu_ref_MHz': nu_ref,
+                   'beam_index': (args.beam_index if beam is not None
+                                  else None),
                    'sig_k': sig_k.tolist(), **kbin_meta}, fh, indent=2,
                   default=str)
 
@@ -309,7 +353,7 @@ def main():
 
         b = construct_b(S, N_inv, F, w, s_mean, f_mean, evecs, data_cube,
                         ws, wf, wd, shape, sys_basis=sys_basis, G=G,
-                        wg=wg, g_mean=g_mean)
+                        wg=wg, g_mean=g_mean, beam=beam)
 
         M_inv = LinearOperator((total_len, total_len), matvec=precond_apply)
         x, exit_code = lgmres(L, b.flatten(), x0=x0, rtol=args.tol, atol=0,
@@ -357,7 +401,8 @@ def main():
         precond_apply = construct_preconditioner(S, N_inv_scalar, F, evecs,
                                                  rfft_len, rfft_shape, f_len,
                                                  f_shape, shape,
-                                                 sys_basis=sys_basis, G=G)
+                                                 sys_basis=sys_basis, G=G,
+                                                 beam=beam)
         gc.collect()
 
     elapsed = time.time() - start

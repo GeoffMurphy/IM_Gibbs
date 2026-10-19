@@ -29,6 +29,9 @@ from .systematics import (
     onef_covariance, period_scan, poly2d_templates, realise, ripple_wavenumber,
     scan_templates, spectral_templates, spillover_envelope,
 )
+from .beam import (
+    FWHM_TO_SIGMA, Beam, beam_fwhm, chromatic_leakage, gaussian_beam,
+)
 from .linear_system import (
     Uf,
     Us,
@@ -55,4 +58,5 @@ __all__ = [
     'leakage_basis', 'faraday_templates', 'lambda_squared', 'poly2d_templates',
     'onef_basis', 'onef_covariance', 'best_fit_amplitudes', 'realise',
     'RM_DEFAULT', 'C_M_MHZ', 'deflate_foreground',
+    'Beam', 'gaussian_beam', 'beam_fwhm', 'chromatic_leakage', 'FWHM_TO_SIGMA',
 ]

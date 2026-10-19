@@ -1,0 +1,199 @@
+"""A chromatic primary beam for the forward model.
+
+With a beam the data model becomes::
+
+    d = w * (B Us s + B Uf f + Ug g) + n
+
+``B`` acts on the sky -- the 21cm signal and the foreground -- and on nothing
+else. Ground spill and 1/f enter through the far sidelobes and the receiver,
+after the main beam, so the systematics block sits outside it; polarisation
+leakage is itself a beam effect and keeps its own spatial templates rather
+than being convolved again. See "No beam in the MODEL" in ``docs/STATUS.md``.
+
+What changes the physics is the chromaticity, not the smoothing
+-----------------------------------------------------------------
+The FWHM scales roughly as ``1/nu``, so across 970-1023 MHz it changes by ~5%.
+A frequency-dependent beam turns spatial structure into spectral structure:
+a foreground that is exactly smooth in frequency in every pixel acquires
+spectral wiggles proportional to its own spatial gradients. That is the
+assumption every absorbed-fraction number in :mod:`imgibbs.systematics`
+rests on, so those numbers need re-measuring with a beam in place.
+:func:`chromatic_leakage` measures the size of the effect on a given cube.
+
+The operator
+------------
+``B`` is diagonal in ``(k_perp, nu)``: transform the two transverse axes,
+multiply each channel by its own transfer function, transform back. It is a
+real symmetric circulant, so ``B^T = B`` and the same call serves as the
+adjoint. It is **not** diagonal in the 3D Fourier basis ``Us`` works in -- the
+frequency dependence mixes ``k_parallel`` -- which is why the preconditioner
+uses a band average for the signal block (see :meth:`Beam.signal_diagonal`).
+
+Boundaries are periodic, matching the periodic box the signal ``s`` is defined
+on. The footprint sits inside a bounding box with flagged edges, so wrapped
+power lands on ``w = 0`` voxels for the most part; it is not zero-padded.
+
+The beam is normalised to ``B(k_perp = 0) = 1``: it conserves the mean
+brightness temperature in each channel, which is the convention a map in K
+convolved with a peak-normalised beam follows.
+"""
+
+from __future__ import annotations
+
+import numpy as np
+import numpy.fft as fft
+
+from .grid import PIX_DEG
+
+#: FWHM = FWHM_TO_SIGMA * sigma for a Gaussian.
+FWHM_TO_SIGMA = 2.0 * np.sqrt(2.0 * np.log(2.0))
+
+
+class Beam:
+    """A beam given as a transfer function per channel on the transverse grid.
+
+    Parameters
+    ----------
+    transfer : array, shape ``(Nx, Ny // 2 + 1, Nz)``
+        ``B(k_perp, nu)`` on the half-plane ``rfftn(..., axes=(0, 1))``
+        produces. Real and even in ``k_perp``, so the operator is symmetric.
+    shape : tuple
+        ``(Nx, Ny, Nz)`` of the cube the beam acts on.
+
+    Build one with :func:`gaussian_beam` rather than by hand.
+    """
+
+    def __init__(self, transfer, shape):
+        self.shape = tuple(int(n) for n in shape)
+        nx, ny, nz = self.shape
+        transfer = np.asarray(transfer, dtype=float)
+        if transfer.shape != (nx, ny // 2 + 1, nz):
+            raise ValueError(f'transfer has shape {transfer.shape}, expected '
+                             f'{(nx, ny // 2 + 1, nz)} for a {self.shape} cube')
+        self.transfer = transfer
+
+    def apply(self, cube):
+        """Convolve a real-space cube with the beam, channel by channel.
+
+        Accepts the cube as ``shape`` or flattened, and returns the same
+        layout it was given. ``B`` is symmetric, so this is also ``B^T``.
+        """
+        flat = np.ndim(cube) == 1
+        c = np.reshape(cube, self.shape)
+        ck = fft.rfftn(c, axes=(0, 1))
+        out = fft.irfftn(ck * self.transfer, s=self.shape[:2], axes=(0, 1))
+        return out.ravel() if flat else out
+
+    adjoint = apply
+
+    def full_transfer(self):
+        """``B(k_perp, nu)`` on the full ``(Nx, Ny, Nz)`` transverse grid."""
+        nx, ny, nz = self.shape
+        full = np.empty(self.shape)
+        nh = ny // 2 + 1
+        full[:, :nh] = self.transfer
+        # Mirror the half-plane: B(-kx, -ky) = B(kx, ky).
+        ky_neg = np.arange(nh, ny)
+        full[:, ky_neg] = self.transfer[(-np.arange(nx)) % nx][:, ny - ky_neg]
+        return full
+
+    def signal_diagonal(self, rfft_shape):
+        """Band-averaged ``|B(k_perp)|^2``, broadcast onto the ``Us`` layout.
+
+        The diagonal of ``Us^T B^2 Us`` in the 3D Fourier basis is *exactly*
+        the band mean of ``B(k_perp, nu)^2`` -- multiplying by a function of
+        ``nu`` is a convolution in ``k_parallel``, and the zero-lag term of
+        that convolution is the mean. The off-diagonal ``k_parallel`` mixing
+        is what the preconditioner drops.
+        """
+        b2 = (self.full_transfer() ** 2).mean(axis=2)           # (Nx, Ny)
+        return np.broadcast_to(b2[:, :, None], rfft_shape).ravel()
+
+
+def gaussian_beam(freqs, shape, fwhm_ref, nu_ref, index=1.0,
+                  pix_deg=PIX_DEG):
+    """A circular Gaussian beam with ``FWHM(nu) = fwhm_ref * (nu_ref/nu)^index``.
+
+    Parameters
+    ----------
+    freqs : array, length Nz
+        Channel frequencies, MHz.
+    shape : tuple
+        ``(Nx, Ny, Nz)``.
+    fwhm_ref : float
+        FWHM in degrees at ``nu_ref``. **Take this from a measured MeerKAT
+        beam, not from** ``1.22 lambda/D`` -- that formula assumes uniform
+        illumination and is not the right width for a tapered feed.
+    nu_ref : float
+        Reference frequency for ``fwhm_ref``, MHz.
+    index : float
+        Chromatic index. ``1`` is diffraction scaling (FWHM ~ lambda);
+        ``0`` gives an achromatic beam, which smooths but cannot mix
+        spatial structure into frequency -- useful as a control.
+    pix_deg : float or (float, float)
+        Map pixel size in degrees along axes 0 and 1. Flat sky.
+
+    Returns
+    -------
+    Beam
+    """
+    nx, ny, nz = (int(n) for n in shape)
+    freqs = np.asarray(freqs, dtype=float)
+    if freqs.shape != (nz,):
+        raise ValueError(f'{freqs.size} frequencies for {nz} channels')
+    px, py = np.broadcast_to(np.asarray(pix_deg, dtype=float), (2,))
+
+    sigma_deg = beam_fwhm(freqs, fwhm_ref, nu_ref, index) / FWHM_TO_SIGMA
+    # Angular wavenumbers in rad/deg on the rfftn(axes=(0, 1)) half-plane.
+    kx = 2 * np.pi * fft.fftfreq(nx, d=px)
+    ky = 2 * np.pi * fft.rfftfreq(ny, d=py)
+    k2 = kx[:, None] ** 2 + ky[None, :] ** 2                   # (Nx, Ny//2+1)
+    transfer = np.exp(-0.5 * k2[:, :, None] * sigma_deg[None, None, :] ** 2)
+    return Beam(transfer, shape)
+
+
+def beam_fwhm(freqs, fwhm_ref, nu_ref, index=1.0):
+    """``FWHM(nu)`` in degrees for the power-law scaling ``gaussian_beam`` uses."""
+    return fwhm_ref * (nu_ref / np.asarray(freqs, dtype=float)) ** index
+
+
+def chromatic_leakage(cube, beam, evecs, w=None):
+    """How much spectral structure the beam adds that the foreground misses.
+
+    Convolves ``cube`` with ``beam`` and returns the residual after projecting
+    out the foreground basis ``evecs`` pixel by pixel -- the part of a smooth
+    foreground that a chromatic beam pushes outside the span ``Uf`` can
+    absorb. Compare its rms with the 21cm signal's.
+
+    The same projection is applied to the unconvolved cube, and that residual
+    is subtracted, so a cube that was not exactly in the span to begin with
+    does not count against the beam.
+
+    Parameters
+    ----------
+    cube : array, shape ``beam.shape``
+        Usually a foreground fit -- a cube inside the span of ``evecs``.
+    beam : Beam
+    evecs : array, shape ``(n_modes, Nz)``, orthonormal rows
+    w : array, optional
+        Weights, ``shape`` or flat. Residual rms is taken over ``w > 0``.
+
+    Returns
+    -------
+    residual : array, ``beam.shape``
+        Beam-induced residual outside the foreground span.
+    rms : float
+        Its rms over the weighted voxels, in the units of ``cube``.
+    """
+    evecs = np.asarray(evecs)
+    if not np.allclose(evecs @ evecs.T, np.eye(evecs.shape[0]), atol=1e-8):
+        raise ValueError('evecs must have orthonormal rows')
+
+    def outside(c):
+        return c - (c @ evecs.T) @ evecs
+
+    cube = np.reshape(cube, beam.shape)
+    residual = outside(beam.apply(cube)) - beam.apply(outside(cube))
+    mask = (np.ones(beam.shape, bool) if w is None
+            else np.reshape(w, beam.shape) > 0)
+    return residual, float(np.sqrt(np.mean(residual[mask] ** 2)))

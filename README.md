@@ -17,6 +17,10 @@ Optionally a fourth component `g`, an instrumental systematic on a fixed
 low-rank basis with a fixed prior, sampled in the same solve:
 `(s, f, g) | S, F, d`. See [Systematics](#systematics).
 
+Optionally a chromatic primary beam `B` on the sky (signal and foreground, not
+the systematic): `d = w (B Us s + B Uf f + Ug g) + n`. **Experimental** — see
+[Beam](#beam).
+
 Foregrounds are marginalised over rather than projected out. Measured against a
 PCA clean on the same cube, k-bins, estimator and truth, the sampler retains
 substantially more signal at intermediate k — 0.86 against 0.46 at
@@ -200,6 +204,24 @@ running the sampler.
 `sys_basis=None` is the default throughout, so the three-block sampler is
 unchanged.
 
+### Beam
+
+```bash
+python scripts/run_gibbs.py 6 --beam-fwhm 1.5 --beam-nu-ref 1000
+```
+
+convolves the signal and foreground with a Gaussian beam,
+`FWHM(nu) = fwhm (nu_ref/nu)^index`, channel by channel (`imgibbs/beam.py`).
+`imgibbs.Beam` takes an arbitrary `B(k_perp, nu)`, so a measured beam drops in
+the same way. `S` is then the power spectrum of the unconvolved sky.
+`beam=None` is the default and leaves the sampler unchanged.
+
+Not yet ready for science runs. Two things are measured and open (see
+`docs/STATUS.md`, "The beam in the MODEL"). The beam leaves the `S` step
+almost no data above the lowest k-bin, and with the real mask the solver
+needs ~20x more iterations. A smooth chromatic beam does *not* add foreground leakage worth
+worrying about; a beam with spectral ripple does.
+
 ### Disk
 
 `x_sample` traces are ~13 MB each, so a 500-sample chain is ~6.5 GB. `S` is
@@ -219,6 +241,7 @@ imgibbs/
   linear_system.py  A, b, and the block-diagonal preconditioner
   covariance.py     the inverse-gamma and inverse-Wishart draws
   systematics.py    instrumental systematics: the ground-spill block
+  beam.py           chromatic primary beam B on the sky
   data.py           locating the input cubes
 notebooks/
   1_generate_signal_cube.ipynb     simulated H I cube + S starting point
@@ -232,7 +255,7 @@ scripts/
   pca_benchmark.py          PCA + transfer function, on the sampler's k-bins
   submit_gibbs.sh           SLURM wrapper
   submit_systematics.sh     SLURM wrapper, one job per arm
-tests/              regression tests on the geometry, binning and systematics
+tests/              regression tests on the geometry, binning, systematics and beam
 docs/STATUS.md      what is settled, what is open, what is known to be wrong
 ```
 
