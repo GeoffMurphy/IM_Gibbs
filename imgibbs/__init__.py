@@ -31,6 +31,7 @@ from .systematics import (
 )
 from .beam import (
     FWHM_TO_SIGMA, Beam, beam_fwhm, chromatic_leakage, gaussian_beam,
+    load_beam_table, radial_transfer, tabulated_beam,
 )
 from .linear_system import (
     Uf,
@@ -59,4 +60,5 @@ __all__ = [
     'onef_basis', 'onef_covariance', 'best_fit_amplitudes', 'realise',
     'RM_DEFAULT', 'C_M_MHZ', 'deflate_foreground',
     'Beam', 'gaussian_beam', 'beam_fwhm', 'chromatic_leakage', 'FWHM_TO_SIGMA',
+    'tabulated_beam', 'load_beam_table', 'radial_transfer',
 ]

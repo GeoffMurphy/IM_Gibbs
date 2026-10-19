@@ -97,6 +97,22 @@ class Beam:
         full[:, ky_neg] = self.transfer[(-np.arange(nx)) % nx][:, ny - ky_neg]
         return full
 
+    def observable_modes(self, threshold):
+        """Which 3D Fourier modes the beam leaves visible to the data.
+
+        ``True`` where the band-averaged ``|B(k_perp)|^2`` is at least
+        ``threshold``, on the full ``fftn`` grid, flattened -- the layout of
+        ``idxs`` from :func:`imgibbs.kbins_from_crop`.
+
+        Used to collapse the ``S`` step: modes the beam has removed carry no
+        information about ``S``, so ``S`` is drawn from the visible modes
+        only and the rest are marginalised. See ``docs/STATUS.md``, "The beam
+        in the MODEL".
+        """
+        b2 = (self.full_transfer() ** 2).mean(axis=2)
+        return np.broadcast_to((b2 >= threshold)[:, :, None],
+                               self.shape).ravel()
+
     def signal_diagonal(self, rfft_shape):
         """Band-averaged ``|B(k_perp)|^2``, broadcast onto the ``Us`` layout.
 
@@ -150,6 +166,85 @@ def gaussian_beam(freqs, shape, fwhm_ref, nu_ref, index=1.0,
     k2 = kx[:, None] ** 2 + ky[None, :] ** 2                   # (Nx, Ny//2+1)
     transfer = np.exp(-0.5 * k2[:, :, None] * sigma_deg[None, None, :] ** 2)
     return Beam(transfer, shape)
+
+
+def radial_transfer(r_deg, profile, k):
+    """Peak-normalised transfer function of a circular beam, by Hankel transform.
+
+    ``B(k) = int P(r) J0(k r) r dr / int P(r) r dr``, so ``B(0) = 1``.
+
+    Parameters
+    ----------
+    r_deg : array
+        Radii, degrees, increasing from (near) zero.
+    profile : array, ``(..., len(r_deg))``
+        Power beam ``P(r)``; any normalisation.
+    k : array
+        Angular wavenumbers, rad/deg.
+
+    Returns
+    -------
+    array, ``(..., len(k))``
+    """
+    from scipy.special import j0
+    r = np.asarray(r_deg, dtype=float)
+    kernel = j0(np.outer(k, r)) * r                         # (nk, nr)
+    num = np.trapezoid(profile[..., None, :] * kernel, r, axis=-1)
+    den = np.trapezoid(profile * r, r, axis=-1)[..., None]
+    return num / den
+
+
+def tabulated_beam(k_table, nu_table, transfer_table, freqs, shape,
+                   pix_deg=PIX_DEG):
+    """A circular beam from a tabulated ``B(|k_perp|, nu)``.
+
+    Linear interpolation in frequency between tabulated channels, then in
+    ``|k_perp|`` onto the grid. This is how a *measured* beam enters the
+    model, ripple and all -- see ``scripts/build_beam_table.py``.
+
+    Parameters
+    ----------
+    k_table : array, ``(nk,)``
+        Angular wavenumbers, rad/deg, increasing, covering the grid's
+        ``|k_perp|`` (checked).
+    nu_table : array, ``(nnu,)``
+        Tabulated frequencies, MHz, increasing, covering ``freqs`` (checked).
+    transfer_table : array, ``(nnu, nk)``
+    freqs, shape, pix_deg :
+        As for :func:`gaussian_beam`.
+    """
+    nx, ny, nz = (int(n) for n in shape)
+    freqs = np.asarray(freqs, dtype=float)
+    k_table = np.asarray(k_table, dtype=float)
+    nu_table = np.asarray(nu_table, dtype=float)
+    transfer_table = np.asarray(transfer_table, dtype=float)
+    if freqs.shape != (nz,):
+        raise ValueError(f'{freqs.size} frequencies for {nz} channels')
+    if freqs.min() < nu_table[0] or freqs.max() > nu_table[-1]:
+        raise ValueError(f'beam table covers {nu_table[0]:.2f}-'
+                         f'{nu_table[-1]:.2f} MHz, grid needs '
+                         f'{freqs.min():.2f}-{freqs.max():.2f}')
+    px, py = np.broadcast_to(np.asarray(pix_deg, dtype=float), (2,))
+    kx = 2 * np.pi * fft.fftfreq(nx, d=px)
+    ky = 2 * np.pi * fft.rfftfreq(ny, d=py)
+    kperp = np.sqrt(kx[:, None] ** 2 + ky[None, :] ** 2)
+    if kperp.max() > k_table[-1]:
+        raise ValueError(f'beam table reaches k = {k_table[-1]:.2f} rad/deg, '
+                         f'grid needs {kperp.max():.2f}')
+
+    # Frequency first: (nz, nk), then onto |k_perp| channel by channel.
+    per_chan = np.stack([np.interp(freqs, nu_table, transfer_table[:, i])
+                         for i in range(len(k_table))], axis=1)
+    transfer = np.stack([np.interp(kperp, k_table, per_chan[c])
+                         for c in range(nz)], axis=-1)
+    return Beam(transfer, shape)
+
+
+def load_beam_table(path, freqs, shape, pix_deg=PIX_DEG):
+    """Build a :class:`Beam` from a table written by ``build_beam_table.py``."""
+    with np.load(path) as t:
+        return tabulated_beam(t['k'], t['freq_MHz'], t['transfer'], freqs,
+                              shape, pix_deg)
 
 
 def beam_fwhm(freqs, fwhm_ref, nu_ref, index=1.0):

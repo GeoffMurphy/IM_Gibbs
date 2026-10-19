@@ -391,3 +391,53 @@ def test_leakage_rejects_a_non_orthonormal_basis():
     sky, evecs = smooth_sky()
     with pytest.raises(ValueError):
         chromatic_leakage(sky, chromatic(), 2 * evecs)
+
+
+# ---------------------------------------------------------------------------
+# Measured beams: tabulation and the collapsed S step
+# ---------------------------------------------------------------------------
+
+def test_hankel_transform_of_a_gaussian_profile_is_gaussian():
+    """``radial_transfer`` against the closed form ``exp(-k^2 sigma^2 / 2)``."""
+    from imgibbs import radial_transfer
+    sigma = 0.6
+    r = np.linspace(0, 8 * sigma, 4000)
+    k = np.linspace(0, 6, 50)
+    B = radial_transfer(r, np.exp(-0.5 * r ** 2 / sigma ** 2), k)
+    assert np.allclose(B, np.exp(-0.5 * k ** 2 * sigma ** 2), atol=1e-6)
+
+
+def test_tabulated_gaussian_reproduces_gaussian_beam():
+    """A table built from a chromatic Gaussian must give back
+    ``gaussian_beam`` -- the path a measured beam takes into the model."""
+    from imgibbs import tabulated_beam
+    nu_table = np.linspace(FREQS[0] - 1, FREQS[-1] + 1, 400)
+    k = np.linspace(0, 20, 4001)
+    sig = beam_fwhm(nu_table, 0.6, FREQS[0], 1.0) / FWHM_TO_SIGMA
+    table = np.exp(-0.5 * k[None, :] ** 2 * sig[:, None] ** 2)
+    tab = tabulated_beam(k, nu_table, table, FREQS, SHAPE, pix_deg=PIX)
+    assert np.allclose(tab.transfer, chromatic().transfer, atol=1e-4)
+
+
+def test_tabulated_beam_refuses_to_extrapolate():
+    from imgibbs import tabulated_beam
+    k = np.linspace(0, 20, 10)
+    nu = np.array([FREQS[0] + 1, FREQS[-1]])
+    with pytest.raises(ValueError):
+        tabulated_beam(k, nu, np.ones((2, 10)), FREQS, SHAPE, pix_deg=PIX)
+    nu = np.array([FREQS[0] - 1, FREQS[-1] + 1])
+    with pytest.raises(ValueError):
+        tabulated_beam(np.linspace(0, 1, 10), nu, np.ones((2, 10)), FREQS,
+                       SHAPE, pix_deg=PIX)
+
+
+def test_observable_modes_follow_the_band_averaged_beam():
+    """Visible modes are the low ``k_perp`` ones, constant along ``k_par``,
+    laid out like ``idxs`` (full fftn grid, flattened)."""
+    beam = chromatic(fwhm=0.9)
+    vis = beam.observable_modes(1e-2).reshape(SHAPE)
+    assert vis[0, 0].all()                        # k_perp = 0 always visible
+    assert (vis == vis[:, :, :1]).all()           # same at every k_par
+    b2 = (beam.full_transfer() ** 2).mean(axis=2)
+    assert np.array_equal(vis[:, :, 0], b2 >= 1e-2)
+    assert 0 < vis.mean() < 1

@@ -24,8 +24,14 @@ Add ``--beam-fwhm`` to put a chromatic Gaussian primary beam on the sky
 
     python scripts/run_gibbs.py 6 --beam-fwhm 1.5 --beam-nu-ref 1000
 
-``S`` is then the power spectrum of the *unconvolved* sky. Take the FWHM from
-a measured MeerKAT beam, not from ``1.22 lambda/D``.
+or, better, a measured beam tabulated by ``scripts/build_beam_table.py``::
+
+    python scripts/run_gibbs.py 6 --beam-table data/beam_uhf_table.npz
+
+``S`` is then the power spectrum of the *unconvolved* sky. With a beam the
+``S`` step is collapsed: ``S`` is drawn from the Fourier modes the beam
+leaves visible (``--beam-threshold``) and the rest are marginalised, rather
+than letting ``S`` re-estimate itself from modes the data never saw.
 """
 
 from __future__ import annotations
@@ -48,6 +54,7 @@ from imgibbs import (                                          # noqa: E402
     Us, construct_A, construct_b, construct_preconditioner,
     bin_it, kbins_from_crop, survey_grid, data_path, load, load_l2021_cube,
     groundspill_basis, ripple_wavenumber, gaussian_beam, beam_fwhm,
+    load_beam_table,
     signal_covariance_sampler as SCS,
     foreground_covariance_sampler as FCS,
 )
@@ -116,6 +123,15 @@ def parse_args():
         'Convolve the sky (signal and foreground) with a chromatic Gaussian '
         'primary beam, FWHM(nu) = fwhm * (nu_ref/nu)^index. Off unless '
         '--beam-fwhm is given. The systematic block stays outside the beam.')
+    bm.add_argument('--beam-table', default=None,
+                    help='tabulated measured beam from build_beam_table.py. '
+                         'Takes precedence over --beam-fwhm.')
+    bm.add_argument('--beam-threshold', type=float, default=1e-3,
+                    help='band-averaged |B|^2 below which a Fourier mode is '
+                         'treated as invisible to the data and left out of '
+                         'the S draw (default 1e-3). The run prints how much '
+                         'information the excluded modes could still carry; '
+                         'keep it well below 1.')
     bm.add_argument('--beam-fwhm', type=float, default=None,
                     help='beam FWHM in degrees at --beam-nu-ref. Take it from '
                          'a measured beam, not 1.22 lambda/D.')
@@ -254,7 +270,17 @@ def main():
     # ------------------------------------------------------------------
     # Beam
     # ------------------------------------------------------------------
-    if args.beam_fwhm is not None:
+    nu_ref = None
+    if args.beam_table is not None:
+        beam = load_beam_table(args.beam_table, grid.freqs, shape)
+        with np.load(args.beam_table) as tab:
+            fw = np.interp(grid.freqs[[0, -1]], tab['freq_MHz'],
+                           tab['fwhm_deg'])
+            src = str(tab['source'])
+        print(f'beam         : tabulated ({src}), FWHM {fw[0]:.3f} deg at '
+              f'{grid.freqs[0]:.1f} MHz -> {fw[1]:.3f} deg at '
+              f'{grid.freqs[-1]:.1f} MHz')
+    elif args.beam_fwhm is not None:
         nu_ref = (args.beam_nu_ref if args.beam_nu_ref is not None
                   else float(grid.freqs.mean()))
         beam = gaussian_beam(grid.freqs, shape, args.beam_fwhm, nu_ref,
@@ -265,7 +291,26 @@ def main():
               f'{grid.freqs[0]:.1f} MHz -> {fw[1]:.3f} deg at '
               f'{grid.freqs[-1]:.1f} MHz (index {args.beam_index:g})')
     else:
-        beam = nu_ref = None
+        beam = None
+
+    # Collapsed S step. Modes the beam has removed carry (almost) no
+    # information about S; drawing S from them as well lets S re-estimate
+    # itself from its own prior draws -- a near random walk. Instead draw S
+    # from the visible modes only (marginalising the rest), then apply it to
+    # every mode in the bin. Exact as the excluded modes' information -> 0.
+    if beam is not None:
+        visible = beam.observable_modes(args.beam_threshold)
+        idxs_S = np.where(visible, idxs, 0)
+        kept = [int(np.sum(idxs_S == b)) for b in occupied_bins]
+        total = [int(np.sum(idxs == b)) for b in occupied_bins]
+        if min(kept) < 3:
+            raise SystemExit(f'--beam-threshold {args.beam_threshold:g} '
+                             f'leaves bins with {kept} visible modes')
+        print('S step       : drawn from beam-visible modes only, '
+              + ', '.join(f'{k}/{t}' for k, t in zip(kept, total)))
+    else:
+        idxs_S = idxs
+        kept = None
 
     # ------------------------------------------------------------------
     # Noise
@@ -328,6 +373,10 @@ def main():
                    'gs_order': args.gs_order if args.groundspill else None,
                    'gs_scan_axis': args.gs_scan_axis if args.groundspill else None,
                    'gs_prior_K': args.gs_prior if args.groundspill else None,
+                   'beam_table': args.beam_table,
+                   'beam_threshold': (args.beam_threshold if beam is not None
+                                      else None),
+                   'beam_visible_modes_per_bin': kept,
                    'beam_fwhm_deg': args.beam_fwhm,
                    'beam_nu_ref_MHz': nu_ref,
                    'beam_index': (args.beam_index if beam is not None
@@ -338,6 +387,7 @@ def main():
     print(f'\nsampling     : {args.n_samples} samples, {n_modes} FG modes, '
           f'traces -> {sample_dir}/*{suffix}.npy')
     start = time.time()
+    warned_q = False
 
     for rr in tqdm(range(args.n_samples)):
         x0 = x      # warm-start the solver from the previous sample
@@ -367,7 +417,7 @@ def main():
         s = Us(s, False)
         s = np.fft.fftn(s - np.mean(s), norm='ortho')
 
-        binned_s, k_bins = bin_it(s, sig_k, idxs)
+        binned_s, k_bins = bin_it(s, sig_k, idxs_S)
         _, PkSample = SCS(np.concatenate(binned_s), np.concatenate(k_bins))
 
         S = np.zeros(len(idxs))
@@ -379,6 +429,18 @@ def main():
         # true DC mode free to carry the overall mean.
         S[idxs == 0] = 1e-12 * np.median(PkSample)
         S[kbin_meta['dc_index']] = 1e30
+
+        if beam is not None:
+            # The excluded modes have |B|^2 < threshold, so each carries at
+            # most this data/prior precision ratio. If S has grown enough to
+            # make that non-negligible, the collapse is no longer exact.
+            q_excl = (w.mean() * N_inv * args.beam_threshold
+                      * float(np.max(PkSample)))
+            if q_excl > 0.05 and not warned_q:
+                print(f'  [{rr}] WARNING: excluded modes may now carry up to '
+                      f'{q_excl:.2f} of their prior precision; lower '
+                      f'--beam-threshold')
+                warned_q = True
 
         np.save(os.path.join(sample_dir, f'Pk_trace{rr}{suffix}.npy'), PkSample)
         if args.save_S:
