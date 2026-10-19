@@ -90,6 +90,15 @@ def parse_args():
                    help='LGMRES relative tolerance (default: 1e-6)')
     p.add_argument('--seed', type=int, default=None,
                    help='numpy random seed, for reproducible chains')
+    p.add_argument('--data', default=None,
+                   help='sample this .npy cube instead of the L2021 data. It '
+                        'must already be cropped to CROP, in K, with flagged '
+                        'voxels at exactly 0 -- e.g. a mock from '
+                        'scripts/beam_injection.py.')
+    p.add_argument('--save-x-every', type=int, default=1,
+                   help='write the full x sample every N iterations '
+                        '(default 1). Each is ~13 MB; Pk/F/g traces are '
+                        'always written every iteration.')
     p.add_argument('--no-flagging', action='store_true',
                    help='do not downweight flagged (zero) voxels')
     g = p.add_argument_group(
@@ -132,6 +141,9 @@ def parse_args():
                          'the S draw (default 1e-3). The run prints how much '
                          'information the excluded modes could still carry; '
                          'keep it well below 1.')
+    bm.add_argument('--no-collapse', action='store_true',
+                    help='draw S from every mode, as without a beam. For '
+                         'comparison only -- see docs/STATUS.md.')
     bm.add_argument('--beam-fwhm', type=float, default=None,
                     help='beam FWHM in degrees at --beam-nu-ref. Take it from '
                          'a measured beam, not 1.22 lambda/D.')
@@ -199,7 +211,15 @@ def main():
     # ------------------------------------------------------------------
     # Data and geometry
     # ------------------------------------------------------------------
-    data_cube = load_l2021_cube()[CROP]
+    if args.data is None:
+        data_cube = load_l2021_cube()[CROP]
+    else:
+        data_cube = np.load(args.data)
+        expected = load_l2021_cube()[CROP].shape
+        if data_cube.shape != expected:
+            raise SystemExit(f'{args.data} is {data_cube.shape}, CROP gives '
+                             f'{expected}')
+        print(f'data         : {args.data}')
     shape = data_cube.shape
     grid = survey_grid(CROP, shape)
     box_dims = grid.box_dims
@@ -298,7 +318,7 @@ def main():
     # itself from its own prior draws -- a near random walk. Instead draw S
     # from the visible modes only (marginalising the rest), then apply it to
     # every mode in the bin. Exact as the excluded modes' information -> 0.
-    if beam is not None:
+    if beam is not None and not args.no_collapse:
         visible = beam.observable_modes(args.beam_threshold)
         idxs_S = np.where(visible, idxs, 0)
         kept = [int(np.sum(idxs_S == b)) for b in occupied_bins]
@@ -345,7 +365,11 @@ def main():
                         f_mean.flatten()]
                        + ([g_mean.flatten()] if sys_basis is not None else []))
 
+    A_calls = [0]
+    matvecs = []
+
     def A_flat(vec):
+        A_calls[0] += 1
         return construct_A(vec, S, Nw_inv, F, w, evecs, rfft_len, rfft_shape,
                            f_len, f_shape, shape,
                            sys_basis=sys_basis, G=G, beam=beam).flatten()
@@ -373,7 +397,10 @@ def main():
                    'gs_order': args.gs_order if args.groundspill else None,
                    'gs_scan_axis': args.gs_scan_axis if args.groundspill else None,
                    'gs_prior_K': args.gs_prior if args.groundspill else None,
+                   'data': args.data,
                    'beam_table': args.beam_table,
+                   'beam_collapse': (beam is not None
+                                     and not args.no_collapse),
                    'beam_threshold': (args.beam_threshold if beam is not None
                                       else None),
                    'beam_visible_modes_per_bin': kept,
@@ -391,7 +418,8 @@ def main():
 
     for rr in tqdm(range(args.n_samples)):
         x0 = x      # warm-start the solver from the previous sample
-        np.save(os.path.join(sample_dir, f'x_sample_{rr}{suffix}.npy'), x)
+        if rr % args.save_x_every == 0:
+            np.save(os.path.join(sample_dir, f'x_sample_{rr}{suffix}.npy'), x)
 
         # Omega draws: these turn the solve from a MAP estimate into a
         # posterior sample. Zero them for the MAP/Wiener-filter solution.
@@ -406,8 +434,10 @@ def main():
                         wg=wg, g_mean=g_mean, beam=beam)
 
         M_inv = LinearOperator((total_len, total_len), matvec=precond_apply)
+        n_mv = A_calls[0]
         x, exit_code = lgmres(L, b.flatten(), x0=x0, rtol=args.tol, atol=0,
                               M=M_inv)
+        matvecs.append(A_calls[0] - n_mv)
         if exit_code != 0:
             print(f'  [{rr}] lgmres did not converge (exit {exit_code})')
 
@@ -430,7 +460,7 @@ def main():
         S[idxs == 0] = 1e-12 * np.median(PkSample)
         S[kbin_meta['dc_index']] = 1e30
 
-        if beam is not None:
+        if beam is not None and not args.no_collapse:
             # The excluded modes have |B|^2 < threshold, so each carries at
             # most this data/prior precision ratio. If S has grown enough to
             # make that non-negligible, the collapse is no longer exact.
@@ -467,9 +497,11 @@ def main():
                                                  beam=beam)
         gc.collect()
 
+    np.save(os.path.join(args.out, f'matvecs{suffix}.npy'), np.array(matvecs))
     elapsed = time.time() - start
     print(f'\n{args.n_samples} samples with {n_modes} FG modes in '
-          f'{elapsed:.1f} s ({elapsed / args.n_samples:.2f} s/sample)')
+          f'{elapsed:.1f} s ({elapsed / args.n_samples:.2f} s/sample, '
+          f'median {np.median(matvecs):.0f} matvecs/solve)')
 
 
 if __name__ == '__main__':
