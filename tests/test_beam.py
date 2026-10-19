@@ -441,3 +441,100 @@ def test_observable_modes_follow_the_band_averaged_beam():
     b2 = (beam.full_transfer() ** 2).mean(axis=2)
     assert np.array_equal(vis[:, :, 0], b2 >= 1e-2)
     assert 0 < vis.mean() < 1
+
+
+# ---------------------------------------------------------------------------
+# The exact-mask foreground preconditioner
+# ---------------------------------------------------------------------------
+
+def masked_system(system, seed=12):
+    """The small system with a real mask: an empty corner and flagged channels."""
+    s = dict(system)
+    rng = np.random.default_rng(seed)
+    w = (rng.random(SHAPE) > 0.15).astype(float)
+    w[:3, :2, :] = 0.0                                  # pixels with no data
+    s['w'] = w.ravel()
+    s['Nw_inv'] = 2.0 * s['w']
+    return s
+
+
+def test_masked_block_with_every_channel_is_the_exact_inverse(system):
+    """One beam group per channel and every mode dense: the block must invert
+    the true masked ``f-f`` block exactly, chromaticity and all."""
+    from imgibbs import MaskedForegroundBlock
+    s = masked_system(system)
+    beam = chromatic()
+    A = dense_A(s, beam=beam)
+    f = slice(2 * s['rfft_len'], 2 * s['rfft_len'] + s['f_len'])
+    blk = MaskedForegroundBlock(beam, s['w'], s['evecs'], 2.0,
+                                n_dense=N_MODES, n_groups=SHAPE[2])
+    blk.factor(s['F'])
+    M = construct_preconditioner(s['S'], 2.0, s['F'], s['evecs'],
+                                 s['rfft_len'], s['rfft_shape'], s['f_len'],
+                                 s['f_shape'], s['shape'], beam=beam,
+                                 fg_block=blk)
+    v = np.random.default_rng(13).normal(size=s['f_len'])
+    x = np.zeros(A.shape[0])
+    x[f] = v
+    assert np.allclose(M(x)[f], np.linalg.solve(A[f, f], v), rtol=1e-8)
+
+
+def test_masked_block_leaves_the_other_blocks_alone(system):
+    from imgibbs import MaskedForegroundBlock
+    s = masked_system(system)
+    beam = chromatic()
+    blk = MaskedForegroundBlock(beam, s['w'], s['evecs'], 2.0, n_dense=2)
+    blk.factor(s['F'])
+    common = (s['S'], 2.0, s['F'], s['evecs'], s['rfft_len'],
+              s['rfft_shape'], s['f_len'], s['f_shape'], s['shape'])
+    old = construct_preconditioner(*common, beam=beam)
+    new = construct_preconditioner(*common, beam=beam, fg_block=blk)
+    x = np.random.default_rng(14).normal(size=2 * s['rfft_len'] + s['f_len'])
+    sig = slice(0, 2 * s['rfft_len'])
+    f = slice(2 * s['rfft_len'], None)
+    assert np.array_equal(old(x)[sig], new(x)[sig])
+    # modes >= n_dense still use the Fourier block, over those modes only
+    assert not np.allclose(old(x)[f], new(x)[f])
+
+
+def test_masked_block_rescues_a_stiff_masked_solve(system):
+    """The live-grid failure in miniature: a weak foreground prior, a mask and
+    a beam. The uniform-coverage preconditioner stalls; the exact-mask block
+    converges in a handful of iterations."""
+    from imgibbs import MaskedForegroundBlock
+    s = masked_system(system)
+    beam = chromatic(fwhm=0.9)
+    F = np.array([1e6, 1e2, 1e-2])                      # N^-1 F ~ 2e6 .. 2e-2
+    f = slice(2 * s['rfft_len'], 2 * s['rfft_len'] + s['f_len'])
+    b = np.random.default_rng(15).normal(size=s['f_len'])
+
+    def iterations(M):
+        cnt = [0]
+
+        def mv(v):
+            cnt[0] += 1
+            x = np.zeros(2 * s['rfft_len'] + s['f_len'])
+            x[f] = v
+            return construct_A(x, s['S'], s['Nw_inv'], F, s['w'], s['evecs'],
+                               s['rfft_len'], s['rfft_shape'], s['f_len'],
+                               s['f_shape'], s['shape'], beam=beam)[f]
+
+        def pc(v):
+            x = np.zeros(2 * s['rfft_len'] + s['f_len'])
+            x[f] = v
+            return M(x)[f]
+        n = s['f_len']
+        lgmres(LinearOperator((n, n), matvec=mv), b, rtol=1e-8, atol=0,
+               M=LinearOperator((n, n), matvec=pc), maxiter=40)
+        return cnt[0]
+
+    common = (s['S'], 2.0, F, s['evecs'], s['rfft_len'], s['rfft_shape'],
+              s['f_len'], s['f_shape'], s['shape'])
+    blk = MaskedForegroundBlock(beam, s['w'], s['evecs'], 2.0, n_dense=2,
+                                n_groups=4)
+    blk.factor(F)
+    plain = iterations(construct_preconditioner(*common, beam=beam))
+    exact = iterations(construct_preconditioner(*common, beam=beam,
+                                                fg_block=blk))
+    assert exact < 40
+    assert exact < plain / 3

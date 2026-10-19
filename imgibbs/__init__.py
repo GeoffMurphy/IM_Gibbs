@@ -34,6 +34,7 @@ from .beam import (
     load_beam_table, radial_transfer, tabulated_beam,
 )
 from .linear_system import (
+    MaskedForegroundBlock,
     Uf,
     Us,
     construct_A,
@@ -50,7 +51,7 @@ __all__ = [
     'make_kbins', 'kbins_from_crop', 'footprint_kmin', 'bin_it',
     'power_spectrum',
     'Us', 'Uf', 'construct_Uf', 'construct_A', 'construct_b',
-    'construct_preconditioner',
+    'construct_preconditioner', 'MaskedForegroundBlock',
     'signal_covariance_sampler', 'foreground_covariance_sampler',
     'SystematicBasis', 'groundspill_basis', 'groundspill_cube',
     'spectral_templates', 'scan_templates', 'spillover_envelope',

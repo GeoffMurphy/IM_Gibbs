@@ -198,7 +198,7 @@ def _construct_A_beam(x, x0_recon, x1_recon, S, Nw_inv, F, evecs, rfft_len,
 
 def construct_preconditioner(S, N_inv_scalar, F, evecs, rfft_len, rfft_shape,
                              f_len, f_shape, shape, sys_basis=None, G=None,
-                             beam=None):
+                             beam=None, fg_block=None):
     """Build a block-diagonal preconditioner ``M^-1`` for ``Ax = b``.
 
     Drops the off-diagonal (signal-foreground coupling) blocks of A, keeping::
@@ -232,6 +232,12 @@ def construct_preconditioner(S, N_inv_scalar, F, evecs, rfft_len, rfft_shape,
         uniform noise: ``Uf^T B^2 Uf`` is diagonal in ``k_perp``, so it is
         one small ``n_modes x n_modes`` matrix per transverse mode, inverted
         once and applied in transverse Fourier space.
+    fg_block : MaskedForegroundBlock, optional
+        With a beam *and* a mask, the uniform-coverage foreground block above
+        is not enough -- on the live grid LGMRES does not converge with it
+        (see :class:`MaskedForegroundBlock`). Supplying one replaces the
+        foreground block for its stiff low-order modes with an exact-mask
+        factorisation; the remaining modes keep the Fourier block.
 
     Returns
     -------
@@ -254,16 +260,26 @@ def construct_preconditioner(S, N_inv_scalar, F, evecs, rfft_len, rfft_shape,
         M00_inv = 1.0 / (1.0 / S_rfft
                          + N_inv_scalar * beam.signal_diagonal(rfft_shape))
 
-        # One (n_modes x n_modes) block per transverse mode.
-        b2 = beam.full_transfer() ** 2                          # (Nx, Ny, Nz)
-        M11 = (np.diag(1.0 / F[:n_modes])
-               + N_inv_scalar * np.einsum('mz,xyz,nz->xymn', evecs, b2, evecs))
-        M11_inv = np.linalg.inv(M11)                  # (Nx, Ny, n_modes, n_modes)
+        # One block per transverse mode, over the modes the dense
+        # exact-mask block (if any) does not already handle.
+        lo = 0 if fg_block is None else fg_block.n_dense
+        hi = np.arange(lo, n_modes)
+        if len(hi):
+            e_hi = evecs[hi]
+            b2 = beam.full_transfer() ** 2                      # (Nx, Ny, Nz)
+            M11 = (np.diag(1.0 / F[hi])
+                   + N_inv_scalar * np.einsum('mz,xyz,nz->xymn', e_hi, b2, e_hi))
+            M11_inv = np.linalg.inv(M11)                  # (Nx, Ny, n_hi, n_hi)
 
         def apply_f(f):
-            fk = fft.fft2(f, axes=(0, 1), norm='ortho')
-            out = np.einsum('xymn,xyn->xym', M11_inv, fk)
-            return fft.ifft2(out, axes=(0, 1), norm='ortho').real.flatten()
+            out = np.empty_like(f)
+            if lo:
+                out[:, :, :lo] = fg_block.solve(f[:, :, :lo])
+            if len(hi):
+                fk = fft.fft2(f[:, :, lo:], axes=(0, 1), norm='ortho')
+                out[:, :, lo:] = fft.ifft2((M11_inv @ fk[..., None])[..., 0],
+                                           axes=(0, 1), norm='ortho').real
+            return out.flatten()
 
     # Systematic block: n_params x n_params, and n_params is a handful. The
     # Gram matrix comes from SystematicBasis.gram(), which factorises it
@@ -286,6 +302,110 @@ def construct_preconditioner(S, N_inv_scalar, F, evecs, rfft_len, rfft_shape,
         return np.concatenate([re_s, im_s, f_out, g_out])
 
     return apply
+
+
+class MaskedForegroundBlock:
+    """Exact-mask preconditioner for the stiff foreground modes under a beam.
+
+    The foreground block of ``A`` is
+
+        A_ff = F^-1 + N^-1 Uf^T B W B Uf
+
+    With no beam it is local to each pixel, and with a beam but no mask it is
+    diagonal in ``k_perp``; the default preconditioner exploits one or the
+    other. With both it is neither, and the prior precision of the low-order
+    modes is ~1e9 below the data's (``N^-1 F_0 ~ 1.4e9`` on the live grid), so
+    any coverage the preconditioner gets wrong becomes a continuum of
+    eigenvalues across nine decades. Measured on a sub-box of the real mask
+    (``docs/STATUS.md``), condition number of the preconditioned block:
+    uniform-coverage Fourier 1.6e6; exact mask, achromatic beam 790; exact
+    mask, beam in 5 channel groups 1.5.
+
+    So this forms the low-order modes' block exactly in pixel space:
+
+        K = sum_g B_g diag(Omega_g) B_g,  Omega_g[p, a, b] = sum_{nu in g} e_a e_b w
+
+    with ``B_g`` the beam averaged over a group of channels -- chromaticity
+    matters here, achromatic is not good enough -- and Cholesky-factorises
+    ``N^-1 K + F^-1``. ``K`` is fixed for a run (beam, mask and basis do not
+    change); only ``F`` does, and a factor built with a stale ``F`` still
+    preconditions well (20 vs 14 iterations with ``F`` off by 20%), so
+    :meth:`factor` need only be called every so often.
+
+    Memory: ``K`` and its factor are each ``(Npix * n_dense)^2`` doubles --
+    0.7 GB apiece at ``n_dense=3`` on the live grid, 2.9 GB at 6.
+
+    Parameters
+    ----------
+    beam : Beam
+    w : array, ``beam.shape`` or flat
+        The weights the operator uses (the mask).
+    evecs : array, ``(n_modes, Nz)``
+    N_inv : float
+    n_dense : int
+        Number of lowest-order modes treated exactly. The rest keep the
+        Fourier block. 3 is enough on the live grid (``N^-1 F_m`` is ~1e9,
+        1e5, 1e2 for modes 0-2 and ~10 above).
+    n_groups : int
+        Channel groups for the chromatic beam. ``Nz`` is exact.
+    """
+
+    def __init__(self, beam, w, evecs, N_inv, n_dense=3, n_groups=5):
+        nx, ny, nz = beam.shape
+        self.shape = beam.shape
+        self.n_dense = int(min(n_dense, evecs.shape[0]))
+        self.N_inv = float(N_inv)
+        npix = nx * ny
+        md = self.n_dense
+        w = np.reshape(w, (npix, nz))
+        ix, iy = np.unravel_index(np.arange(npix), (nx, ny))
+        dx = (ix[:, None] - ix[None, :]) % nx
+        dy = (iy[:, None] - iy[None, :]) % ny
+        K = np.zeros((npix, md, npix, md))
+        for grp in np.array_split(np.arange(nz), int(n_groups)):
+            kern = fft.irfftn(beam.transfer[:, :, grp].mean(axis=2),
+                              s=(nx, ny), axes=(0, 1))
+            Bg = kern[dx, dy]                          # symmetric circulant
+            e = evecs[:md, grp]
+            Om = np.einsum('az,bz,pz->pab', e, e, w[:, grp])
+            for a in range(md):
+                for b in range(a, md):
+                    blk = (Bg * Om[:, a, b][None, :]) @ Bg
+                    K[:, a, :, b] += blk
+                    if b != a:
+                        K[:, b, :, a] += blk
+        self.K = self.N_inv * K.reshape(npix * md, npix * md)
+        self._inv = None
+
+    def factor(self, F):
+        """(Re)build the inverse with the current foreground covariance ``F``.
+
+        Forms the explicit inverse (Cholesky then ``dpotri``) rather than
+        keeping the factor: it is applied ~25 times per solve and reused
+        across many solves, and a dense matvec is ~4x faster than a pair of
+        triangular solves. Accuracy is ample for a preconditioner.
+        """
+        from scipy.linalg import lapack
+        npix = self.shape[0] * self.shape[1]
+        M = np.asfortranarray(self.K)                 # copy, Fortran order
+        M[np.diag_indices_from(M)] += np.tile(
+            1.0 / np.asarray(F)[:self.n_dense], npix)
+        c, info = lapack.dpotrf(M, lower=1, overwrite_a=1, clean=0)
+        if info != 0:
+            raise np.linalg.LinAlgError(f'dpotrf failed (info={info})')
+        inv, info = lapack.dpotri(c, lower=1, overwrite_c=1)
+        if info != 0:
+            raise np.linalg.LinAlgError(f'dpotri failed (info={info})')
+        # dpotri fills the lower triangle only.
+        inv = np.tril(inv)
+        inv += np.tril(inv, -1).T
+        self._inv = np.ascontiguousarray(inv)
+
+    def solve(self, f_lo):
+        """Apply the inverse to the low-order amplitudes, ``(Nx, Ny, n_dense)``."""
+        if self._inv is None:
+            raise RuntimeError('call factor(F) first')
+        return (self._inv @ np.reshape(f_lo, -1)).reshape(np.shape(f_lo))
 
 
 def construct_b(S, N_inv, F, w, s_mean, f_mean, evecs, data_cube, ws, wf, wd,

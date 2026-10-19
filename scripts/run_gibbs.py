@@ -54,7 +54,7 @@ from imgibbs import (                                          # noqa: E402
     Us, construct_A, construct_b, construct_preconditioner,
     bin_it, kbins_from_crop, survey_grid, data_path, load, load_l2021_cube,
     groundspill_basis, ripple_wavenumber, gaussian_beam, beam_fwhm,
-    load_beam_table,
+    load_beam_table, MaskedForegroundBlock,
     signal_covariance_sampler as SCS,
     foreground_covariance_sampler as FCS,
 )
@@ -141,6 +141,19 @@ def parse_args():
                          'the S draw (default 1e-3). The run prints how much '
                          'information the excluded modes could still carry; '
                          'keep it well below 1.')
+    bm.add_argument('--fg-dense-modes', type=int, default=3,
+                    help='foreground modes preconditioned exactly, with the '
+                         'mask, under the beam (default 3; 0 disables). '
+                         'Memory ~2 x (Npix * n)^2 doubles: 1.4 GB at 3.')
+    bm.add_argument('--fg-beam-groups', type=int, default=5,
+                    help='channel groups for the beam in that block '
+                         '(default 5)')
+    bm.add_argument('--fg-refresh', type=int, default=20,
+                    help='rebuild that block with the current F at least '
+                         'every N samples (default 20), and sooner whenever a '
+                         'solve takes over twice the matvecs of the first '
+                         'solve after the last rebuild -- F moves fast in '
+                         'burn-in, slowly after')
     bm.add_argument('--no-collapse', action='store_true',
                     help='draw S from every mode, as without a beam. For '
                          'comparison only -- see docs/STATUS.md.')
@@ -376,11 +389,24 @@ def main():
 
     L = LinearOperator(matvec=A_flat, rmatvec=A_flat, shape=(len(x), len(x)))
 
+    # With a beam and a mask the default foreground preconditioner does not
+    # converge (docs/STATUS.md); treat the stiff low-order modes exactly.
+    fg_block = None
+    if beam is not None and args.fg_dense_modes > 0:
+        t0 = time.time()
+        fg_block = MaskedForegroundBlock(beam, w, evecs, N_inv_scalar,
+                                         n_dense=args.fg_dense_modes,
+                                         n_groups=args.fg_beam_groups)
+        fg_block.factor(F)
+        print(f'fg precond   : exact-mask block, {fg_block.n_dense} modes, '
+              f'{args.fg_beam_groups} beam groups, built in '
+              f'{time.time() - t0:.0f} s, refreshed every {args.fg_refresh}')
+
     precond_apply = construct_preconditioner(S, N_inv_scalar, F, evecs,
                                              rfft_len, rfft_shape, f_len,
                                              f_shape, shape,
                                              sys_basis=sys_basis, G=G,
-                                             beam=beam)
+                                             beam=beam, fg_block=fg_block)
 
     # ------------------------------------------------------------------
     # Sampling
@@ -404,6 +430,10 @@ def main():
                    'beam_threshold': (args.beam_threshold if beam is not None
                                       else None),
                    'beam_visible_modes_per_bin': kept,
+                   'fg_dense_modes': (fg_block.n_dense if fg_block is not None
+                                      else 0),
+                   'fg_beam_groups': args.fg_beam_groups,
+                   'fg_refresh': args.fg_refresh,
                    'beam_fwhm_deg': args.beam_fwhm,
                    'beam_nu_ref_MHz': nu_ref,
                    'beam_index': (args.beam_index if beam is not None
@@ -415,6 +445,7 @@ def main():
           f'traces -> {sample_dir}/*{suffix}.npy')
     start = time.time()
     warned_q = False
+    fg_baseline, since_refresh, fg_refreshes = None, 0, []
 
     for rr in tqdm(range(args.n_samples)):
         x0 = x      # warm-start the solver from the previous sample
@@ -490,14 +521,26 @@ def main():
         F = np.diag(FCS(f_centered))
         np.save(os.path.join(sample_dir, f'F_trace{rr}{suffix}.npy'), F)
 
+        if fg_block is not None:
+            if fg_baseline is None:
+                fg_baseline = matvecs[-1]
+            since_refresh += 1
+            if (since_refresh >= args.fg_refresh
+                    or matvecs[-1] > 2 * fg_baseline):
+                fg_block.factor(F)
+                fg_refreshes.append(rr)
+                fg_baseline, since_refresh = None, 0
         precond_apply = construct_preconditioner(S, N_inv_scalar, F, evecs,
                                                  rfft_len, rfft_shape, f_len,
                                                  f_shape, shape,
                                                  sys_basis=sys_basis, G=G,
-                                                 beam=beam)
+                                                 beam=beam, fg_block=fg_block)
         gc.collect()
 
     np.save(os.path.join(args.out, f'matvecs{suffix}.npy'), np.array(matvecs))
+    if fg_block is not None:
+        np.save(os.path.join(args.out, f'fg_refreshes{suffix}.npy'),
+                np.array(fg_refreshes))
     elapsed = time.time() - start
     print(f'\n{args.n_samples} samples with {n_modes} FG modes in '
           f'{elapsed:.1f} s ({elapsed / args.n_samples:.2f} s/sample, '

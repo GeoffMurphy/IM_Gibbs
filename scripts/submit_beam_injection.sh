@@ -24,8 +24,9 @@
 #   nobeam      beamed mock, NO beam in the model                  (misspecified)
 #   control     unbeamed mock, no beam in the model                (baseline)
 #
-# Beamed arms run at ~45 s/sample on 12 cores (the foreground block of the
-# preconditioner is the bottleneck, see docs/STATUS.md); unbeamed at ~9 s.
+# Beamed arms run at ~9 s/sample on a 12-core laptop with the exact-mask
+# foreground preconditioner (~1.4 GB extra memory); unbeamed at ~1.5-3 s on
+# an ilifu node.
 # Extra arguments go to run_gibbs.py, e.g. --n-samples 1500.
 #
 # PYTHON defaults to the validated ilifu environment; override to taste.
