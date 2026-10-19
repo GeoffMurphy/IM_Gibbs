@@ -134,11 +134,11 @@ def summarise(args):
         post = pk[args.burn:]
         mv = os.path.join(arm_dir, f'matvecs{sfx}.npy')
         mv = np.median(np.load(mv)) if os.path.exists(mv) else np.nan
-        rows[arm] = (post.mean(0), post.std(0), len(pk), mv)
+        rows[arm] = (post.mean(0), post.std(0), pk, mv)
         np.save(os.path.join(arm_dir, 'Pk_chain.npy'), pk)
 
-    for arm, (mean, std, n, mv) in rows.items():
-        print(f'{arm}: {n} samples, median {mv:.0f} matvecs/solve')
+    for arm, (mean, std, pk, mv) in rows.items():
+        print(f'{arm}: {len(pk)} samples, median {mv:.0f} matvecs/solve')
         print('   ratio to truth (all modes):     '
               + '  '.join(f'{m / t:6.3f}+-{s / t:.3f}'
                           for m, s, t in zip(mean, std, p_all)))
