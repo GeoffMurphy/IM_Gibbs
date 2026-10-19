@@ -4,7 +4,7 @@ The working record for this repository: what the current configuration is, why
 it is that way, and what is still wrong with it. Read this before trusting a
 number out of here.
 
-Last substantive update: 2026-10-19 (the beam).
+Last substantive update: 2026-10-19 (the beam, measured UHF beam, injection test).
 
 ---
 
@@ -604,9 +604,11 @@ order they are worth doing.
    it.
 
 4. **The beam.** Added 2026-10-19 on branch `beam` — see "The beam in the
-   MODEL" below. The feared result did not happen: a *smooth* chromatic beam
-   leaves the absorbed-fraction tables standing. The new problem is the `S`
-   step, which the beam starves of data above the lowest bin.
+   MODEL" below. With the measured UHF beam it matters: its ripple leaks
+   ~0.4 mK of foreground at the 17.4 MHz period, and a sampler without the
+   beam puts 15x the true power into bin 0. Two consequences were fixed (a
+   collapsed `S` step, an exact-mask foreground preconditioner); the
+   known-answer arms are on ilifu.
 
 ### Where things live
 
@@ -923,8 +925,10 @@ curve. This is the forward model itself:
     d = w * (B Us s + B Uf f + Ug g) + n
 
 `imgibbs/beam.py` plus a `beam=` argument on `construct_A`, `construct_b` and
-`construct_preconditioner`; `scripts/run_gibbs.py --beam-fwhm DEG
-[--beam-nu-ref MHz] [--beam-index 1]`. `beam=None` is the default and is a
+`construct_preconditioner`; `scripts/run_gibbs.py --beam-table
+data/beam_uhf_table.npz` (a measured beam, tabulated by
+`scripts/build_beam_table.py`) or `--beam-fwhm DEG [--beam-nu-ref MHz]
+[--beam-index 1]` (a Gaussian). `beam=None` is the default and is a
 separate code path, not a multiplication by one, so the published sampler is
 untouched — `tests/test_beam.py` pins that with exact equality, and pins that
 an identity beam reproduces the beamless operator to rounding.
@@ -950,59 +954,80 @@ function, so `B^T = B` and one call serves both ways. Periodic boundaries,
 matching the periodic box `s` lives on. Peak-normalised, `B(k_perp=0) = 1`.
 `gaussian_beam` builds `FWHM(nu) = fwhm_ref (nu_ref/nu)^index`; the `Beam`
 class takes an arbitrary `B(k_perp, nu)`, so a measured beam drops in without
-code changes. ~15 ms per application on the live grid. No default FWHM is
-shipped on purpose — take it from a measured MeerKAT beam, not
-`1.22 lambda/D`. (1.55 deg at band centre, used below, is the
-`1.22 lambda/D` figure — a placeholder for scale, not a recommendation.)
+code changes — `tabulated_beam` / `load_beam_table` interpolate a measured
+`B(|k_perp|, nu)` onto the grid. ~15 ms per application on the live grid. No
+default Gaussian FWHM is shipped on purpose; use the measured table. (The
+1.55 deg used for the Gaussian rows below is the `1.22 lambda/D` figure, a
+placeholder for scale; the measured beam is ~4% narrower.)
 
 #### Measured, 2026-10-19
 
-**1. A smooth chromatic beam does NOT break the smooth-foreground assumption.**
-This section previously predicted it would, and that every absorbed-fraction
-number would need re-measuring. Measured with `chromatic_leakage` on the real
-cube's own 6-mode Legendre fit (fg rms 3.40 K), 1.55 deg at band centre:
+**1. The measured beam DOES leak foreground — through its ripple, not its
+1/nu scaling.** Measured with `chromatic_leakage` on the real cube's own
+Legendre fit (fg rms 3.40 K), against simulated H I rms 0.86 mK:
 
-| beam | distortion it causes | left outside the foreground span |
-|---|---|---|
-| achromatic | — | 0 (to rounding) |
-| chromatic, `FWHM ∝ 1/nu`, vs achromatic | 6.56 mK rms | **0.0007 mK** (n=6), 0.0033 (n=3), 0.13 (n=2) |
-| chromatic + 2% width ripple, 20 MHz period | — | **5.3 mK** |
+| beam | left outside the foreground span |
+|---|---|
+| achromatic | 0 (to rounding) |
+| Gaussian, 1.55 deg, `FWHM ∝ 1/nu` | 0.0007 mK (n=6), 0.0033 (n=3), 0.13 (n=2) |
+| Gaussian, measured FWHM, index 0.63 | 0.0004 mK (n=6) |
+| Gaussian + 2% width ripple, 20 MHz period | 5.3 mK (n=6) |
+| **measured UHF beam** (`build_beam_table.py`) | **0.43 mK (n=3), 0.39 (n=6), 0.12 (n=10)** |
 
-Simulated H I rms is 0.86 mK. A Gaussian whose width scales as a power law is
-itself smooth in frequency, so the product with a smooth foreground stays
-smooth and the Legendre basis takes 99.99% of it. What *does* break the
-assumption is spectral structure in the beam — a ripple in the beam width
-leaks 6x the H I. That is exactly the MeerKLASS ripple-beam problem the
-`museek` beam-correction work is about, which makes the boundary between the
-two efforts concrete: the measured ripple belongs in a `Beam` transfer
-function here; this repository does not need to model it from first
-principles. The systematics absorbed-fraction tables stand for a smooth beam.
+A Gaussian whose width follows a power law is smooth in frequency, so it stays
+inside the Legendre span — the first draft of this section stopped there and
+concluded the beam was harmless to the foreground model. The measured beam is
+not: its width departs from a power law by only 0.13% rms (0.25% max), but
+the foreground is ~1e4x the H I, so that leaves 0.39 mK — **~45% of the H I
+rms** — outside 6 modes. The residual's dominant period is **17.4 MHz**, the
+MeerKAT standing-wave period, which is also the ripple the ground-spill block
+was built around (`--gs-period 17.5`). Part of what that block absorbs on real
+data may be beam ripple acting on the foreground rather than ground pickup;
+with the beam in the model the two are now separately represented. The
+absorbed-fraction tables in `imgibbs/systematics.py` hold for the
+*systematic's* templates (which sit outside `B`), but the foreground is no
+longer exactly smooth per pixel once the measured beam is applied.
 
-**2. The beam starves the `S` step of data.** Fraction of modes per bin where
-the data outweigh the prior, `N^-1 <w> <|B|^2> > 1/S`, with `S` from
-`S_starting_point_cropped.npy`:
+The measured beam, `data/beam_uhf_table.npz` from
+`/idia/projects/meerklass/MEERKLASS-2/beams/uhf/MeerKAT_U_band_primary_beam_aa_highres.npz`
+(Stokes I, array average, azimuthally averaged, +-6 deg): FWHM 1.510 deg at
+960.5 MHz -> 1.441 deg at 1034.9 MHz, i.e. **1.15-1.17 lambda/D** (not 1.22),
+effective chromatic index **0.63** (not 1), instantaneous ellipticity ~5%
+(1.52 vs 1.45 deg) removed by the azimuthal average. **It is the UHF beam on
+L-band data** — same dish, different feed — so the ripple's amplitude and
+phase are a realistic stand-in, not the L-band truth. The table is identical
+on the laptop and ilifu (sha1 of `transfer` `8e02f084961c28a1`).
 
-| bin | k | modes | no beam | beam (1.55 deg) |
-|---|---|---|---|---|
-| 1 | 0.068 | 898 | 1.000 | 0.425 |
-| 2 | 0.160 | 12474 | 1.000 | 0.038 |
-| 3 | 0.374 | 106814 | 1.000 | 0.006 |
-| 4 | 0.875 | 209276 | 0.000 | 0.000 |
-| 5 | 2.046 | 454834 | 0.000 | 0.000 |
+**2. The beam starves the `S` step of data — fixed by collapsing it.**
+Fraction of modes per bin where the data outweigh the prior,
+`q = N^-1 <w> <|B|^2> S > 1`, with `S` from `S_starting_point_cropped.npy`:
 
-The beam cuts off near `k_perp ~ 0.14`, and every |k| shell above bin 1 is
-almost all transverse modes past that. In a shell where 96–99% of modes are
-prior-dominated, each Gibbs `s` draw fills them from the current `S`, and the
-inverse-gamma step then re-estimates `S` mostly from its own draw — a near
-random walk. A 3-sample smoke run (seed 1) shows bins 1–2 climbing faster
-with the beam than without (bin 1: 7.0e-5 → 2.1e-4 → 4.2e-4, vs 5.1e-5 →
-9.2e-5 → 1.0e-4); three samples cannot separate that from burn-in, but it is
-the direction this predicts. **This has to be settled before a beamed run is
-trusted.** Options, roughly in order of cost: estimate `S` only from modes
-with `<|B|^2>` above a threshold (the `N_k` in the inverse-gamma draw then
-changes); bin in `(k_perp, k_par)` so the beam-killed modes sit in their own
-bins; or sample the *beamed* power `|B|^2 S` and deconvolve afterwards. Note
-the overlap with the student's `S_samp` task — same block, related cause.
+| bin | k | modes | no beam | Gaussian 1.55 deg | measured UHF |
+|---|---|---|---|---|---|
+| 1 | 0.068 | 898 | 1.000 | 0.425 | 0.559 |
+| 2 | 0.160 | 12474 | 1.000 | 0.038 | 0.051 |
+| 3 | 0.374 | 106814 | 1.000 | 0.006 | 0.007 |
+| 4 | 0.875 | 209276 | 0.000 | 0.000 | 0.000 |
+| 5 | 2.046 | 454834 | 0.000 | 0.000 | 0.000 |
+
+Every |k| shell above bin 1 is mostly transverse modes past the beam cutoff.
+In those, each `s` draw fills the mode from the current `S`, and the
+inverse-gamma step re-estimates `S` mostly from its own draw: valid in the
+limit, but a near random walk (a 3-sample smoke run showed bins 1–2 climbing
+faster with the beam). The Gibbs step is not *wrong*, it mixes badly.
+
+**Fix (`run_gibbs.py`, on by default with a beam): a partially collapsed Gibbs
+step.** Draw `S` from `p(S | s_visible)` — the inverse-gamma over the modes
+with band-averaged `|B|^2 >= --beam-threshold` (default 1e-3) — then apply it
+to *every* mode in the bin and draw all of `s` from `p(s | S, d)` as before.
+If the excluded modes carry no data information, marginalising them out of
+the `S` step is exact (they integrate to one under `p(s_excl | S)`), and the
+following full `s` draw refreshes them, so the chain still targets the right
+posterior; it reduces to the old sampler as the threshold goes to zero. At
+1e-3 an excluded mode carries at most `q = 2.3e-3` of its prior's precision
+(99th percentile 1e-4) and the bins keep 898 / 5494 / 10400 / 23762 / 53763
+modes. The run warns if `S` grows enough that excluded modes could carry
+more than 5%. `--no-collapse` restores the old step for comparison.
 
 Do **not** start a beamed run from flat `S = 1e30`. That trick relies on the
 data constraining every mode (see "Gibbs flat-S burn-in"); a mode with
@@ -1010,41 +1035,90 @@ data constraining every mode (see "Gibbs flat-S burn-in"); a mode with
 variance ~1e15 K² and would hold `S` up indefinitely. `run_gibbs.py` starts
 from `S_starting_point_cropped.npy`, which is fine.
 
-**3. The solver slows ~20x, and it is the mask, not the beam.** One solve, live grid,
-real mask, `rtol=1e-6`: **33 matvecs without the beam, 653 with it** (20x);
-per matvec only 86 → 113 ms. Wall clock 9 → 45 s/sample in the smoke run
-(LGMRES warm-starts from the previous sample, so it is less than 20x).
-Isolated by switching the mask and the chromaticity independently (same
-system, `rtol=1e-6`, capped at 700 matvecs):
+**3. The solver: beam x mask, in the foreground block — fixed with an
+exact-mask preconditioner.** One solve, live grid, real mask, `rtol=1e-6`:
+33 matvecs without the beam, **653** with it; on the beamed injection mock it
+did not finish one sample in 9 min on an ilifu node. Switching the mask and
+the chromaticity independently (capped at 700):
 
 | | no mask | real mask |
 |---|---|---|
 | no beam | 26 | 33 |
-| achromatic beam | 25 | **> 700** |
-| chromatic beam | 20 | **653 / > 700** (two runs) |
+| achromatic beam | 25 | > 700 |
+| chromatic beam | 20 | 653 / > 700 |
 
-So the beam preconditioner is fine and chromaticity is irrelevant — it is
-**beam x mask**. The likely mechanism: 1285 of 3150 pixels have no data at
-all. Without a beam their foreground amplitudes decouple and are pure prior.
-With one they couple, through `B`, to data within a beam width of the
-footprint edge, and deep inside the empty region they are still pure prior.
-The transverse-Fourier preconditioner uses the scalar `N_inv` — uniform
-coverage — so for low-`k_perp` modes it assumes data the empty region does
-not have, wrong by up to a factor `N_inv F`. Same family as `N_inv_scalar`
-not being allowed to carry the mask (see the preconditioner note above).
-Candidates: a coverage-aware term built from the beam-smoothed `w`, or
-dropping the `f` amplitudes of pixels more than a few beam widths from any
-data (they are prior-only, and they are the inpainting that is already ~200x
-outside its intended job). **Measure samples-to-convergence, not matvecs,
-before keeping any change** — see the preconditioner trade-off.
+Splitting the system: the **signal** sub-system is fine with the beam (16 →
+18 matvecs); the **foreground** sub-system goes 8 → > 600. The reason is
+scale: `N^-1 F_m` is ~1.4e9, 1.1e5, 1.2e2 for modes 0–2 (and ~10 above), so
+the low-order foreground modes are almost entirely data-determined, and any
+coverage the preconditioner gets wrong becomes a continuum of eigenvalues
+over nine decades. Without a beam the block is pixel-local and the empty
+pixels all share one eigenvalue, which LGMRES disposes of at once; with a
+beam it is not.
 
-The foreground block of the preconditioner is **exact** for uniform noise —
-`Uf^T B^2 Uf` is diagonal in `k_perp`, one `n_modes x n_modes` block per
-transverse mode — and the signal block is the exact diagonal
-(band-averaged `|B(k_perp)|^2`) of `Us^T B^2 Us`, exact outright for an
-achromatic beam. Both are pinned in the tests.
+On a 28 x 20 sub-box of the real mask (62% fill, 38% empty pixels) the exact
+foreground block was formed densely and the preconditioned spectrum measured
+(`scripts/fg_precond_spectrum.py 10 38 5 25`; iterations at `rtol=1e-6`):
 
-**4. Deflation was not revisited.** `deflate_foreground` projects the span of
+| foreground preconditioner | LGMRES | CG | condition no. |
+|---|---|---|---|
+| none | > 60000 | > 5000 | 1.5e9 |
+| uniform-coverage Fourier (the old one) | > 60000 | 1074 | 1.6e6 |
+| two-region (prior-only where coverage < 0.1) | — | — | (full grid: > 600) |
+| exact mask, achromatic beam | 236 | 150 | 790 |
+| **exact mask, beam in 5 channel groups** | **14** | **10** | **1.5** |
+| exact mask, 25 groups | 8 | 5 | 1.0 |
+| exact (5 grp) for modes 0–2, Fourier for 3–5 | 32 | 23 | 7.9 |
+| exact (5 grp), all modes, `F` stale by 20% / 100% | 20 / 32 | 15 / 19 | 2.9 / 4.7 |
+
+Chromaticity, irrelevant to the *uniform-coverage* block, matters here: with
+`N^-1 F_0 ~ 1e9`, a 1% operator error is a large eigenvalue error.
+
+**Fix: `MaskedForegroundBlock`** (`imgibbs/linear_system.py`). Forms
+`N^-1 sum_g B_g diag(Omega_g) B_g` for the lowest `n_dense` modes exactly in
+pixel space (`B_g` the beam averaged over a channel group, `Omega_g` the
+masked mode overlaps), adds `F^-1`, and keeps the explicit inverse
+(Cholesky + `dpotri`; a dense matvec is 26 ms against 98 ms for two
+triangular solves and 1.5 s for `scipy.linalg.cho_solve`, which copies the
+factor on every call). The rest of the modes keep the Fourier block.
+`K` is fixed for a run; only `F` changes, so the inverse is rebuilt every
+`--fg-refresh` samples or when a solve takes more than twice the matvecs of
+the first one after the last rebuild (in burn-in `F` moves fast: 25 → 56
+matvecs over four samples, then steady at ~33). On by default with a beam:
+`--fg-dense-modes 3 --fg-beam-groups 5`. Memory ~1.4 GB; build ~25 s;
+rebuild ~25 s.
+
+Live grid, full solve: **653 → 25 matvecs** (real cube), 26 (beamed mock);
+**45 → 9 s per sample** on the laptop including rebuilds.
+`tests/test_beam.py` pins that with one group per channel and every mode
+dense the block is the *exact* inverse of the masked foreground block.
+
+As always (see "Gibbs preconditioner trade-off" above), `tol` is a sampling
+parameter and matvecs are not the figure of merit — but a sampler that does
+not finish a sample has no samples to converge in, so this one is not
+optional.
+
+**4. Known-answer injection test** (`scripts/beam_injection.py`,
+`submit_beam_injection.sh`; ilifu, `~/imgibbs-beam`, outputs in
+`/scratch3/users/geoffmurphy/beam_injection`). Mock: simulated H I (0.86 mK
+rms) + the real cube's 6-mode Legendre foreground (0.12 K rms) convolved with
+the measured beam, real mask, sampler noise (1.1 mK). Ratio of the posterior
+mean P(k) to the true H I power per bin, 200 samples burn-in:
+
+| arm | bin 0 (0.068) | 1 (0.160) | 2 (0.374) | 3 (0.875) | 4 (2.046) |
+|---|---|---|---|---|---|
+| control: unbeamed mock, no beam model (1500) | 0.13 ± 0.02 | 0.68 ± 0.02 | 0.92 ± 0.01 | 0.98 ± 0.01 | 1.00 ± 0.02 |
+| nobeam: beamed mock, no beam model (869 so far) | **15.0 ± 0.9** | 0.31 ± 0.01 | 0.013 ± 0.004 | 0.08 ± 0.02 | 0.67 ± 0.06 |
+| beam: beamed mock, beam + collapse + exact precond | running (3000) | | | | |
+| nocollapse: as beam, old `S` step | queued (3000) | | | | |
+
+The control reproduces the known low-k loss (13% in bin 0, from the
+foreground basis — see "The control arm loses low-k power"). Leaving the
+beam out is catastrophic: bin 0 is 15x high — the 17.4 MHz beam-ripple
+leakage of finding 1 lands at `k_par = 0.073`, inside bin 0 — and bins 1–3
+are suppressed by the unmodelled smoothing.
+
+**5. Deflation was not revisited.** `deflate_foreground` projects the span of
 `Uf` out of a systematic's templates. With a beam the model's foreground span
 is `B Uf`; by (1) the two differ negligibly for a smooth beam, but a rippled
 measured beam would need the deflation done against `B Uf`.

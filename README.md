@@ -18,8 +18,7 @@ low-rank basis with a fixed prior, sampled in the same solve:
 `(s, f, g) | S, F, d`. See [Systematics](#systematics).
 
 Optionally a chromatic primary beam `B` on the sky (signal and foreground, not
-the systematic): `d = w (B Us s + B Uf f + Ug g) + n`. **Experimental** — see
-[Beam](#beam).
+the systematic): `d = w (B Us s + B Uf f + Ug g) + n`. See [Beam](#beam).
 
 Foregrounds are marginalised over rather than projected out. Measured against a
 PCA clean on the same cube, k-bins, estimator and truth, the sampler retains
@@ -206,21 +205,33 @@ unchanged.
 
 ### Beam
 
+A measured MeerKAT beam is tabulated once per machine (the table is derived
+collaboration data and is not committed):
+
 ```bash
-python scripts/run_gibbs.py 6 --beam-fwhm 1.5 --beam-nu-ref 1000
+python scripts/build_beam_table.py /path/to/MeerKAT_U_band_primary_beam_aa_highres.npz
+python scripts/run_gibbs.py 6 --beam-table data/beam_uhf_table.npz
 ```
 
-convolves the signal and foreground with a Gaussian beam,
-`FWHM(nu) = fwhm (nu_ref/nu)^index`, channel by channel (`imgibbs/beam.py`).
-`imgibbs.Beam` takes an arbitrary `B(k_perp, nu)`, so a measured beam drops in
-the same way. `S` is then the power spectrum of the unconvolved sky.
-`beam=None` is the default and leaves the sampler unchanged.
+That convolves the signal and foreground, not the systematic, with the beam
+channel by channel (`imgibbs/beam.py`). `S` is then the power spectrum of the
+unconvolved sky. `--beam-fwhm` gives a Gaussian instead. `beam=None` is the
+default and leaves the sampler unchanged.
 
-Not yet ready for science runs. Two things are measured and open (see
-`docs/STATUS.md`, "The beam in the MODEL"). The beam leaves the `S` step
-almost no data above the lowest k-bin, and with the real mask the solver
-needs ~20x more iterations. A smooth chromatic beam does *not* add foreground leakage worth
-worrying about; a beam with spectral ripple does.
+Two things change with a beam, and both are on by default:
+
+- **The `S` step is collapsed.** `S` is drawn from the Fourier modes the beam
+  leaves visible (`--beam-threshold`), and the rest are marginalised.
+- **The foreground block of the preconditioner is exact.** With the real
+  mask it covers the stiff low-order modes (`--fg-dense-modes`), at about
+  1.4 GB of memory. Without it LGMRES does not converge in useful time.
+
+A beamed sample takes ~9 s on a laptop. The measured beam's spectral ripple
+pushes ~0.4 mK of foreground (about half the HI rms) outside the foreground
+basis, at the 17.4 MHz standing-wave period. Leaving the beam out of the model
+puts that into the lowest k-bin. `scripts/beam_injection.py` and
+`submit_beam_injection.sh` run the known-answer test. See `docs/STATUS.md`,
+"The beam in the MODEL".
 
 ### Disk
 
@@ -241,7 +252,7 @@ imgibbs/
   linear_system.py  A, b, and the block-diagonal preconditioner
   covariance.py     the inverse-gamma and inverse-Wishart draws
   systematics.py    instrumental systematics: the ground-spill block
-  beam.py           chromatic primary beam B on the sky
+  beam.py           chromatic primary beam B on the sky, Gaussian or measured
   data.py           locating the input cubes
 notebooks/
   1_generate_signal_cube.ipynb     simulated H I cube + S starting point
@@ -253,6 +264,10 @@ scripts/
   systematics_injection.py  systematics injection test, known answer
   systematics_report.py     tables and figures from a finished injection run
   pca_benchmark.py          PCA + transfer function, on the sampler's k-bins
+  build_beam_table.py       tabulate a measured MeerKAT beam for --beam-table
+  beam_injection.py         beam known-answer test: mocks and summary
+  fg_precond_spectrum.py    preconditioner spectra on a sub-box of the mask
+  submit_beam_injection.sh  SLURM wrapper, one job per beam arm
   submit_gibbs.sh           SLURM wrapper
   submit_systematics.sh     SLURM wrapper, one job per arm
 tests/              regression tests on the geometry, binning, systematics and beam
