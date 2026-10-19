@@ -1108,15 +1108,28 @@ mean P(k) to the true H I power per bin, 200 samples burn-in:
 | arm | bin 0 (0.068) | 1 (0.160) | 2 (0.374) | 3 (0.875) | 4 (2.046) |
 |---|---|---|---|---|---|
 | control: unbeamed mock, no beam model (1500) | 0.13 ± 0.02 | 0.68 ± 0.02 | 0.92 ± 0.01 | 0.98 ± 0.01 | 1.00 ± 0.02 |
-| nobeam: beamed mock, no beam model (869 so far) | **15.0 ± 0.9** | 0.31 ± 0.01 | 0.013 ± 0.004 | 0.08 ± 0.02 | 0.67 ± 0.06 |
-| beam: beamed mock, beam + collapse + exact precond | running (3000) | | | | |
-| nocollapse: as beam, old `S` step | queued (3000) | | | | |
+| nobeam: beamed mock, no beam model (1500) | **15.0 ± 0.8** | 0.31 ± 0.01 | 0.010 ± 0.004 | 0.06 ± 0.02 | 0.61 ± 0.08 |
+| beam: beamed mock, beam + collapse + exact precond — **INTERIM, 419 of 3000** | 0.98 ± 0.18 | 1.10 ± 0.07 | 0.87 ± 0.06 | 0.76 ± 0.05 | 1.32 ± 0.06 |
+| nocollapse: as beam, old `S` step | running (3000) | | | | |
 
 The control reproduces the known low-k loss (13% in bin 0, from the
 foreground basis — see "The control arm loses low-k power"). Leaving the
 beam out is catastrophic: bin 0 is 15x high — the 17.4 MHz beam-ripple
 leakage of finding 1 lands at `k_par = 0.073`, inside bin 0 — and bins 1–3
-are suppressed by the unmodelled smoothing.
+are suppressed by the unmodelled smoothing. Its bins 2–3 also drift (second
+half / first half 0.59, 0.57): not converged either.
+
+**The beam row is interim and must not be quoted.** 219 post-burn-in samples,
+and still drifting down in every bin (second half / first half 0.93–0.97).
+Against the true power of the beam-visible modes the ratios are 0.98, 1.08,
+1.06, 0.92, 1.37. Two things to check when the run finishes:
+- **Bin 0 at 0.98 is suspicious, not good news.** The beamless control loses
+  87% of bin 0 to the foreground basis, and modelling a beam has no obvious
+  way to undo that. Likelier: the same ~13% retained plus beam-ripple
+  leakage the model has not fully absorbed, summing to ~1 by coincidence.
+  Test: compare the recovered `s` with the true H I mode by mode in bin 0,
+  and run a beamed mock with the H I switched off.
+- **Bin 4 at 1.3** — noise-dominated, possibly deconvolution amplifying noise.
 
 **5. Deflation was not revisited.** `deflate_foreground` projects the span of
 `Uf` out of a systematic's templates. With a beam the model's foreground span
