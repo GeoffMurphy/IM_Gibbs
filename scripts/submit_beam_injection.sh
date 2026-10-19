@@ -11,7 +11,7 @@
 
 # One arm of the beam known-answer test (scripts/beam_injection.py).
 #
-#   python scripts/beam_injection.py build          # once, writes the mocks
+#   python scripts/beam_injection.py build          # once: mocks + beam_args.txt
 #   sbatch -J beam      scripts/submit_beam_injection.sh beam
 #   sbatch -J nocollapse scripts/submit_beam_injection.sh nocollapse
 #   sbatch -J nobeam    scripts/submit_beam_injection.sh nobeam
@@ -41,12 +41,13 @@ mkdir -p logs
 
 PYTHON=${PYTHON:-$HOME/ska/.venv/bin/python}
 OUT=${OUT:-outputs/beam_injection}
-TABLE=${TABLE:-data/beam_uhf_table.npz}
+# The beamed arms model the beam the mocks were built with.
+read -r -a BEAM <<< "$(cat "$OUT/beam_args.txt")"
 export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK:-16}
 
 case "$ARM" in
-  beam)       DATA=mock_beamed;  EXTRA=(--beam-table "$TABLE") ;;
-  nocollapse) DATA=mock_beamed;  EXTRA=(--beam-table "$TABLE" --no-collapse) ;;
+  beam)       DATA=mock_beamed;  EXTRA=("${BEAM[@]}") ;;
+  nocollapse) DATA=mock_beamed;  EXTRA=("${BEAM[@]}" --no-collapse) ;;
   nobeam)     DATA=mock_beamed;  EXTRA=() ;;
   control)    DATA=mock_control; EXTRA=() ;;
   *) echo "unknown arm $ARM"; exit 2 ;;

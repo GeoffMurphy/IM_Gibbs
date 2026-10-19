@@ -925,10 +925,9 @@ curve. This is the forward model itself:
     d = w * (B Us s + B Uf f + Ug g) + n
 
 `imgibbs/beam.py` plus a `beam=` argument on `construct_A`, `construct_b` and
-`construct_preconditioner`; `scripts/run_gibbs.py --beam-table
-data/beam_uhf_table.npz` (a measured beam, tabulated by
-`scripts/build_beam_table.py`) or `--beam-fwhm DEG [--beam-nu-ref MHz]
-[--beam-index 1]` (a Gaussian). `beam=None` is the default and is a
+`construct_preconditioner`; `scripts/run_gibbs.py --beam-fwhm DEG
+[--beam-nu-ref MHz] [--beam-index 1]` (a Gaussian) or `--beam-table FILE`
+(any tabulated `B(|k_perp|, nu)`, `imgibbs.load_beam_table` format). `beam=None` is the default and is a
 separate code path, not a multiplication by one, so the published sampler is
 untouched — `tests/test_beam.py` pins that with exact equality, and pins that
 an identity beam reproduces the beamless operator to rounding.
@@ -972,7 +971,7 @@ Legendre fit (fg rms 3.40 K), against simulated H I rms 0.86 mK:
 | Gaussian, 1.55 deg, `FWHM ∝ 1/nu` | 0.0007 mK (n=6), 0.0033 (n=3), 0.13 (n=2) |
 | Gaussian, measured FWHM, index 0.63 | 0.0004 mK (n=6) |
 | Gaussian + 2% width ripple, 20 MHz period | 5.3 mK (n=6) |
-| **measured UHF beam** (`build_beam_table.py`) | **0.43 mK (n=3), 0.39 (n=6), 0.12 (n=10)** |
+| **measured MeerKAT UHF beam** | **0.43 mK (n=3), 0.39 (n=6), 0.12 (n=10)** |
 
 A Gaussian whose width follows a power law is smooth in frequency, so it stays
 inside the Legendre span — the first draft of this section stopped there and
@@ -988,15 +987,17 @@ absorbed-fraction tables in `imgibbs/systematics.py` hold for the
 *systematic's* templates (which sit outside `B`), but the foreground is no
 longer exactly smooth per pixel once the measured beam is applied.
 
-The measured beam, `data/beam_uhf_table.npz` from
-`/idia/projects/meerklass/MEERKLASS-2/beams/uhf/MeerKAT_U_band_primary_beam_aa_highres.npz`
-(Stokes I, array average, azimuthally averaged, +-6 deg): FWHM 1.510 deg at
+The measured beam is the MeerKAT UHF primary-beam model (array average),
+which is **not public and not distributed here**; nothing in the repository
+needs it. `scripts/build_beam_table.py` reduces such a model to a
+`--beam-table` (Stokes I, azimuthally averaged, +-6 deg). Its properties: FWHM 1.510 deg at
 960.5 MHz -> 1.441 deg at 1034.9 MHz, i.e. **1.15-1.17 lambda/D** (not 1.22),
 effective chromatic index **0.63** (not 1), instantaneous ellipticity ~5%
 (1.52 vs 1.45 deg) removed by the azimuthal average. **It is the UHF beam on
 L-band data** — same dish, different feed — so the ripple's amplitude and
-phase are a realistic stand-in, not the L-band truth. The table is identical
-on the laptop and ilifu (sha1 of `transfer` `8e02f084961c28a1`).
+phase are a realistic stand-in, not the L-band truth. Without access to a
+measured beam, the Gaussian rows above are what can be reproduced; the
+leakage needs spectral structure in the beam, which a Gaussian does not have.
 
 **2. The beam starves the `S` step of data — fixed by collapsing it.**
 Fraction of modes per bin where the data outweigh the prior,
@@ -1100,7 +1101,8 @@ optional.
 
 **4. Known-answer injection test** (`scripts/beam_injection.py`,
 `submit_beam_injection.sh`; ilifu, `~/imgibbs-beam`, outputs in
-`/scratch3/users/geoffmurphy/beam_injection`). Mock: simulated H I (0.86 mK
+`/scratch3/users/geoffmurphy/beam_injection`; these runs used the measured
+UHF beam, while the scripts default to a Gaussian). Mock: simulated H I (0.86 mK
 rms) + the real cube's 6-mode Legendre foreground (0.12 K rms) convolved with
 the measured beam, real mask, sampler noise (1.1 mK). Ratio of the posterior
 mean P(k) to the true H I power per bin, 200 samples burn-in:

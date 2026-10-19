@@ -1,9 +1,12 @@
 #!/usr/bin/env python
-"""Tabulate a measured MeerKAT beam as ``B(|k_perp|, nu)`` for the sampler.
+"""Tabulate a primary-beam model as ``B(|k_perp|, nu)`` for ``--beam-table``.
 
-Reads the SARAO/MeerKLASS primary-beam ``.npz`` (complex Jones voltage
-patterns, ``beam`` of shape ``(4 pols, n_ant, n_freq, n, n)`` on a
-``margin_deg`` grid), and for every channel in the requested band:
+For anyone with access to a MeerKAT primary-beam model in the
+``.npz`` layout used by the MeerKAT beam releases: complex Jones voltage
+patterns ``beam`` of shape ``(4 pols, n_ant, n_freq, n, n)`` on a
+``margin_deg`` grid, with ``freq_MHz`` and ``antnames``. Such models are not
+distributed with this repository, and nothing here depends on one -- every
+script runs with a Gaussian beam by default. For every channel in the band:
 
 1. forms the Stokes-I power beam ``P = (|HH|^2 + |HV|^2 + |VH|^2 + |VV|^2)/2``;
 2. averages it azimuthally -- a scanned map averages over parallactic angle,
@@ -11,25 +14,17 @@ patterns, ``beam`` of shape ``(4 pols, n_ant, n_freq, n, n)`` on a
    instantaneous, slightly elliptical pattern;
 3. Hankel-transforms the radial profile to a peak-normalised ``B(k)``.
 
-The output is small (a few hundred kB) and is **not** committed: it is
-derived from collaboration data, like the L2021 cubes. Build it on each
-machine from the same ``.npz``::
+The output (``k``, ``freq_MHz``, ``transfer``, plus profiles and FWHMs) is
+derived from the input model, so it is gitignored under ``data/`` and should
+be treated with the same access restrictions::
 
-    python scripts/build_beam_table.py \\
-        /idia/projects/meerklass/MEERKLASS-2/beams/uhf/MeerKAT_U_band_primary_beam_aa_highres.npz
+    python scripts/build_beam_table.py BEAM_MODEL.npz --out data/my_beam_table.npz
+    python scripts/run_gibbs.py 6 --beam-table data/my_beam_table.npz
 
-writes ``data/beam_uhf_table.npz``. Then ``run_gibbs.py --beam-table
-data/beam_uhf_table.npz``.
-
-The pattern stops at the edge of the ``.npz`` grid (+-6 deg for the UHF
-file), so far sidelobes beyond that are not in ``B``. That is the right
-split here anyway: far-sidelobe pickup is the ground-spill systematic, which
-the model keeps outside the beam.
-
-**Band caveat.** The L2021 data are L band; the only file available is the
-UHF beam. Same dish, different feed, so the illumination taper -- and with
-it the width and the ripple -- will differ in detail. Treat it as a
-realistic stand-in for the beam's structure, not as the L-band beam.
+The pattern stops at the edge of the model's grid, so far sidelobes beyond
+that are not in ``B``. That is the right split here anyway: far-sidelobe
+pickup is the ground-spill systematic, which the model keeps outside the
+beam.
 """
 
 from __future__ import annotations
@@ -50,8 +45,8 @@ from imgibbs import data_path, radial_transfer                 # noqa: E402
 def open_beam(path):
     """Memory-map ``beam.npy`` inside an *uncompressed* ``.npz``.
 
-    ``np.load`` would read all of it (8.6 GB for the UHF file); the band
-    needed here is ~100 of 1024 channels.
+    ``np.load`` would read all of it (several GB for a full-band model);
+    the band needed here is a small fraction of the channels.
     """
     z = zipfile.ZipFile(path)
     info = z.getinfo('beam.npy')
@@ -74,7 +69,7 @@ def open_beam(path):
 def main():
     p = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     p.add_argument('npz', help='MeerKAT primary-beam .npz')
-    p.add_argument('--out', default=str(data_path('beam_uhf_table.npz')))
+    p.add_argument('--out', default=str(data_path('beam_table.npz')))
     p.add_argument('--fmin', type=float, default=960.0,
                    help='lowest frequency to tabulate, MHz (default 960)')
     p.add_argument('--fmax', type=float, default=1035.0,

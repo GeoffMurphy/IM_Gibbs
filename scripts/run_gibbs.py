@@ -24,9 +24,9 @@ Add ``--beam-fwhm`` to put a chromatic Gaussian primary beam on the sky
 
     python scripts/run_gibbs.py 6 --beam-fwhm 1.5 --beam-nu-ref 1000
 
-or, better, a measured beam tabulated by ``scripts/build_beam_table.py``::
+or any tabulated ``B(|k_perp|, nu)`` (format: ``imgibbs.load_beam_table``)::
 
-    python scripts/run_gibbs.py 6 --beam-table data/beam_uhf_table.npz
+    python scripts/run_gibbs.py 6 --beam-table my_beam_table.npz
 
 ``S`` is then the power spectrum of the *unconvolved* sky. With a beam the
 ``S`` step is collapsed: ``S`` is drawn from the Fourier modes the beam
@@ -133,8 +133,9 @@ def parse_args():
         'primary beam, FWHM(nu) = fwhm * (nu_ref/nu)^index. Off unless '
         '--beam-fwhm is given. The systematic block stays outside the beam.')
     bm.add_argument('--beam-table', default=None,
-                    help='tabulated measured beam from build_beam_table.py. '
-                         'Takes precedence over --beam-fwhm.')
+                    help='tabulated beam, imgibbs.load_beam_table format '
+                         '(k, freq_MHz, transfer). Takes precedence over '
+                         '--beam-fwhm.')
     bm.add_argument('--beam-threshold', type=float, default=1e-3,
                     help='band-averaged |B|^2 below which a Fourier mode is '
                          'treated as invisible to the data and left out of '

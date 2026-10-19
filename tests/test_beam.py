@@ -538,3 +538,16 @@ def test_masked_block_rescues_a_stiff_masked_solve(system):
                                                 fg_block=blk))
     assert exact < 40
     assert exact < plain / 3
+
+
+def test_beam_spec_round_trips_to_run_gibbs_flags():
+    """beam_injection records a beam as a spec and hands run_gibbs the flags;
+    the two must describe the same beam."""
+    from imgibbs import beam_from_spec, beam_run_args
+    spec = dict(fwhm=0.6, index=1.0, nu_ref=float(FREQS[0]))
+    b = beam_from_spec(spec, FREQS, SHAPE, pix_deg=PIX)
+    assert np.allclose(b.transfer, chromatic().transfer)
+    flags = beam_run_args(spec)
+    assert flags[flags.index('--beam-fwhm') + 1] == repr(0.6)
+    assert flags[flags.index('--beam-nu-ref') + 1] == repr(float(FREQS[0]))
+    assert beam_run_args(dict(table='t.npz')) == ['--beam-table', 't.npz']

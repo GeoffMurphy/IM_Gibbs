@@ -247,6 +247,31 @@ def load_beam_table(path, freqs, shape, pix_deg=PIX_DEG):
                               shape, pix_deg)
 
 
+def beam_from_spec(spec, freqs, shape, pix_deg=PIX_DEG):
+    """Build a beam from a small dict, so scripts can record and rebuild it.
+
+    ``{'table': path}`` loads a tabulated beam (:func:`load_beam_table`);
+    ``{'fwhm': deg, 'nu_ref': MHz, 'index': float}`` builds a Gaussian
+    (``nu_ref`` defaults to the band centre, ``index`` to 1).
+    """
+    if spec.get('table'):
+        return load_beam_table(spec['table'], freqs, shape, pix_deg)
+    nu_ref = spec.get('nu_ref') or float(np.mean(freqs))
+    return gaussian_beam(freqs, shape, spec['fwhm'], nu_ref,
+                         index=spec.get('index', 1.0), pix_deg=pix_deg)
+
+
+def beam_run_args(spec):
+    """The ``run_gibbs.py`` flags that select the beam ``spec`` describes."""
+    if spec.get('table'):
+        return ['--beam-table', str(spec['table'])]
+    out = ['--beam-fwhm', repr(float(spec['fwhm'])),
+           '--beam-index', repr(float(spec.get('index', 1.0)))]
+    if spec.get('nu_ref'):
+        out += ['--beam-nu-ref', repr(float(spec['nu_ref']))]
+    return out
+
+
 def beam_fwhm(freqs, fwhm_ref, nu_ref, index=1.0):
     """``FWHM(nu)`` in degrees for the power-law scaling ``gaussian_beam`` uses."""
     return fwhm_ref * (nu_ref / np.asarray(freqs, dtype=float)) ** index

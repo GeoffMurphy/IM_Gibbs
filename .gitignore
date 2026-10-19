@@ -15,9 +15,10 @@ LP_*.npy
 data/L2021_*.npy
 data/LP_*.npy
 
-# Beam tables derived from the MeerKAT primary-beam files (collaboration
-# data). Rebuild with scripts/build_beam_table.py on each machine.
-data/beam_*_table.npz
+# Beam tables derived from primary-beam models that are not ours to
+# distribute (scripts/build_beam_table.py). Never commit these.
+data/beam_*table*.npz
+data/*beam*.npz
 
 # Retired 72^3-grid products, superseded by the *_cropped versions.
 S_starting_point.npy

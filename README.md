@@ -205,18 +205,17 @@ unchanged.
 
 ### Beam
 
-A measured MeerKAT beam is tabulated once per machine (the table is derived
-collaboration data and is not committed):
-
 ```bash
-python scripts/build_beam_table.py /path/to/MeerKAT_U_band_primary_beam_aa_highres.npz
-python scripts/run_gibbs.py 6 --beam-table data/beam_uhf_table.npz
+python scripts/run_gibbs.py 6 --beam-fwhm 1.5 --beam-index 1
 ```
 
-That convolves the signal and foreground, not the systematic, with the beam
-channel by channel (`imgibbs/beam.py`). `S` is then the power spectrum of the
-unconvolved sky. `--beam-fwhm` gives a Gaussian instead. `beam=None` is the
-default and leaves the sampler unchanged.
+convolves the signal and foreground, not the systematic, with a chromatic
+Gaussian beam, channel by channel (`imgibbs/beam.py`). `--beam-table` takes
+any tabulated `B(|k_perp|, nu)` instead (format: `imgibbs.load_beam_table`;
+`scripts/build_beam_table.py` makes one from a MeerKAT primary-beam model if
+you have access to one, and none is distributed here). `S` is then the power
+spectrum of the unconvolved sky. `beam=None` is the default and leaves the
+sampler unchanged.
 
 Two things change with a beam, and both are on by default:
 
@@ -226,10 +225,11 @@ Two things change with a beam, and both are on by default:
   mask it covers the stiff low-order modes (`--fg-dense-modes`), at about
   1.4 GB of memory. Without it LGMRES does not converge in useful time.
 
-A beamed sample takes ~9 s on a laptop. The measured beam's spectral ripple
-pushes ~0.4 mK of foreground (about half the HI rms) outside the foreground
-basis, at the 17.4 MHz standing-wave period. Leaving the beam out of the model
-puts that into the lowest k-bin. `scripts/beam_injection.py` and
+A beamed sample takes ~9 s on a laptop. A smooth Gaussian leaks almost no
+foreground, but a measured MeerKAT beam's spectral ripple pushed ~0.4 mK
+(about half the HI rms) outside the foreground basis at the 17.4 MHz
+standing-wave period, and leaving the beam out of the model put that into the
+lowest k-bin. `scripts/beam_injection.py` and
 `submit_beam_injection.sh` run the known-answer test. See `docs/STATUS.md`,
 "The beam in the MODEL".
 
@@ -264,7 +264,7 @@ scripts/
   systematics_injection.py  systematics injection test, known answer
   systematics_report.py     tables and figures from a finished injection run
   pca_benchmark.py          PCA + transfer function, on the sampler's k-bins
-  build_beam_table.py       tabulate a measured MeerKAT beam for --beam-table
+  build_beam_table.py       tabulate a primary-beam model for --beam-table
   beam_injection.py         beam known-answer test: mocks and summary
   fg_precond_spectrum.py    preconditioner spectra on a sub-box of the mask
   submit_beam_injection.sh  SLURM wrapper, one job per beam arm

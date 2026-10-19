@@ -9,16 +9,25 @@ synthetic cubes on the live grid and mask::
 
 HI is the simulated FastBox cube shipped in ``data/``; FG is the least-squares
 Legendre model of the real L2021 cube (same as ``systematics_injection.py``),
-so its amplitude and spectral shape are realistic; ``B`` is a tabulated
-measured beam; the noise has the sampler's own ``T_sys``. A ``control`` mock
-is the same sky and noise with no beam.
+so its amplitude and spectral shape are realistic; ``B`` is the beam; the
+noise has the sampler's own ``T_sys``. A ``control`` mock is the same sky and
+noise with no beam.
 
-Build both mocks::
+Build both mocks, with a Gaussian beam by default::
 
-    python scripts/beam_injection.py build --beam-table data/beam_uhf_table.npz
+    python scripts/beam_injection.py build [--beam-fwhm 1.5 --beam-index 1]
 
-then sample them with ``run_gibbs.py --data`` (``submit_beam_injection.sh``
-runs the standard arms), then::
+or with any tabulated beam you have (format: ``imgibbs.load_beam_table``)::
+
+    python scripts/beam_injection.py build --beam-table my_beam.npz
+
+A smooth Gaussian exercises the deconvolution, the collapsed ``S`` step and
+the preconditioner, but leaks almost no foreground (docs/STATUS.md, "The beam
+in the MODEL"); a measured beam with spectral ripple is the harder test.
+``build`` writes ``beam_args.txt`` beside the mocks -- the ``run_gibbs.py``
+flags for the same beam -- so the sampler models exactly the beam the mock
+was made with. Then sample the mocks (``submit_beam_injection.sh`` runs the
+standard arms), then::
 
     python scripts/beam_injection.py summarise outputs/beam_injection
 
@@ -40,7 +49,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from imgibbs import (                                          # noqa: E402
-    bin_it, data_path, kbins_from_crop, load, load_beam_table,
+    beam_from_spec, beam_run_args, bin_it, data_path, kbins_from_crop, load,
     load_l2021_cube,
 )
 import imgibbs.grid as grid_mod                                # noqa: E402
@@ -72,7 +81,10 @@ def build(args):
     ev = legendre(shape[2], N_MODES)
     fg = ((real.reshape(-1, shape[2]) @ ev.T) @ ev).reshape(shape)
     hi = load('Fastbox_cube_cropped.npy')[:, :, :shape[2]]
-    beam = load_beam_table(args.beam_table, freqs_for(CROP), shape)
+    spec = (dict(table=os.path.abspath(args.beam_table)) if args.beam_table
+            else dict(fwhm=args.beam_fwhm, index=args.beam_index,
+                      nu_ref=args.beam_nu_ref))
+    beam = beam_from_spec(spec, freqs_for(CROP), shape)
     rng = np.random.default_rng(TRUTH_SEED)
     noise = rng.normal(scale=np.sqrt(T_SYS ** 2 / (DEL_NU * DEL_T)),
                        size=shape)
@@ -86,7 +98,9 @@ def build(args):
     np.save(os.path.join(args.out, 'mock_beamed.npy'), beamed)
     np.save(os.path.join(args.out, 'mock_control.npy'), control)
     np.save(os.path.join(args.out, 'truth_hi.npy'), hi)
-    meta = dict(beam_table=str(args.beam_table), truth_seed=TRUTH_SEED,
+    Path(args.out, 'beam_args.txt').write_text(' '.join(beam_run_args(spec))
+                                               + '\n')
+    meta = dict(beam=spec, truth_seed=TRUTH_SEED,
                 n_modes_fg=N_MODES, hi_rms_K=float(hi.std()),
                 fg_rms_K=float(fg[flag > 0].std()),
                 noise_rms_K=float(noise.std()))
@@ -108,9 +122,9 @@ def summarise(args):
     meta = json.loads(data_path('S_starting_point_cropped_meta.json').read_text())
     sig_k, idxs, _ = kbins_from_crop(real, tuple(meta['box_dims']),
                                      max_bins=N_K_BINS)
-    beam = load_beam_table(json.loads(Path(args.out, 'mock_meta.json')
-                                      .read_text())['beam_table'],
-                           freqs_for(CROP), real.shape)
+    mock = json.loads(Path(args.out, 'mock_meta.json').read_text())
+    spec = mock.get('beam') or dict(table=mock['beam_table'])
+    beam = beam_from_spec(spec, freqs_for(CROP), real.shape)
     vis = beam.observable_modes(args.threshold)
     p_all = true_power(hi, sig_k, idxs)
     p_vis = true_power(hi, sig_k, np.where(vis, idxs, 0))
@@ -157,7 +171,16 @@ def main():
     p = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     sub = p.add_subparsers(dest='cmd', required=True)
     b = sub.add_parser('build')
-    b.add_argument('--beam-table', default=str(data_path('beam_uhf_table.npz')))
+    b.add_argument('--beam-table', default=None,
+                   help='tabulated beam (imgibbs.load_beam_table format); '
+                        'overrides the Gaussian')
+    b.add_argument('--beam-fwhm', type=float, default=1.5,
+                   help='Gaussian FWHM in degrees at --beam-nu-ref '
+                        '(default 1.5)')
+    b.add_argument('--beam-nu-ref', type=float, default=None,
+                   help='reference frequency, MHz (default: band centre)')
+    b.add_argument('--beam-index', type=float, default=1.0,
+                   help='chromatic index (default 1)')
     b.add_argument('--out', default='outputs/beam_injection')
     s = sub.add_parser('summarise')
     s.add_argument('out', nargs='?', default='outputs/beam_injection')

@@ -7,11 +7,13 @@ B W B Uf densely on a small sub-box of the live crop (with the measured beam
 and the real mask), then for each candidate preconditioner reports LGMRES
 and CG iteration counts and the eigenvalue range of M^-1 A_ff.
 
-    python scripts/fg_precond_spectrum.py 10 38 5 25      # x0 x1 y0 y1
+    python scripts/fg_precond_spectrum.py 10 38 5 25 [beam_table.npz]
 
-Needs data/beam_uhf_table.npz (scripts/build_beam_table.py). The sub-box is
-periodic, so the beam wraps at its edges; that does not matter for comparing
-preconditioners. F is the value from a full-grid run.
+x0 x1 y0 y1 select the sub-box. Without a beam table it uses a chromatic
+Gaussian (1.5 deg at band centre, index 1); the table in STATUS.md was
+measured with a tabulated measured beam, which is not distributed. The
+sub-box is periodic, so the beam wraps at its edges; that does not matter for
+comparing preconditioners. F is the value from a full-grid run.
 """
 import sys, time
 from pathlib import Path
@@ -34,7 +36,8 @@ nm = 6
 ev = np.linalg.qr(np.polynomial.legendre.legvander(np.linspace(-1, 1, nz), nm - 1))[0].T
 F = np.array([1.757e3, 1.46e-1, 1.60e-4, 1.34e-5, 1.02e-5, 5.39e-6])   # from the full-grid run
 S = np.full(P * nz, 1e-5)
-beam = load_beam_table(data_path('beam_uhf_table.npz'), freqs, shape)
+beam = (load_beam_table(sys.argv[5], freqs, shape) if len(sys.argv) > 5
+        else gaussian_beam(freqs, shape, 1.5, freqs.mean(), 1.0))
 rs = (nx, ny, nz // 2 + 1); rl = int(np.prod(rs)); fs = (nx, ny, nm); fl = P * nm; n = 2 * rl + fl
 sl = slice(2 * rl, n)
 
@@ -43,7 +46,8 @@ def A11_mv(v, b_=beam):
     return construct_A(x, S, Ni * w, F, w, ev, rl, rs, fl, fs, shape, beam=b_)[sl]
 
 t = time.time()
-cache = Path('outputs') / f'A11_{sys.argv[1]}_{sys.argv[2]}_{sys.argv[3]}_{sys.argv[4]}.npy'
+tag = Path(sys.argv[5]).stem if len(sys.argv) > 5 else 'gauss'
+cache = Path('outputs') / f'A11_{tag}_{sys.argv[1]}_{sys.argv[2]}_{sys.argv[3]}_{sys.argv[4]}.npy'
 cache.parent.mkdir(exist_ok=True)
 if cache.exists():
     A = np.load(cache)
