@@ -139,9 +139,18 @@ def summarise(args):
 
     for arm, (mean, std, n, mv) in rows.items():
         print(f'{arm}: {n} samples, median {mv:.0f} matvecs/solve')
-        print('   ratio to truth (all modes): '
+        print('   ratio to truth (all modes):     '
               + '  '.join(f'{m / t:6.3f}+-{s / t:.3f}'
                           for m, s, t in zip(mean, std, p_all)))
+        print('   ratio to truth (visible modes): '
+              + '  '.join(f'{m / t:6.3f}+-{s / t:.3f}'
+                          for m, s, t in zip(mean, std, p_vis)))
+        # Drift: posterior mean of the first and second halves after burn-in.
+        h = len(pk[args.burn:]) // 2
+        if h >= 20:
+            first, second = pk[args.burn:args.burn + h].mean(0), pk[args.burn + h:].mean(0)
+            print('   drift (2nd half / 1st half):    '
+                  + '  '.join(f'{b / a:6.3f}' for a, b in zip(first, second)))
 
 
 def main():
