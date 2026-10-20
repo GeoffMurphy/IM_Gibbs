@@ -1121,23 +1121,43 @@ Drift (second half / first half of the post-burn-in chain): control
 0.98–1.02; beam 1.08, 1.02, 1.01, **1.31, 1.19**; nocollapse 1.08, 1.03,
 0.99, 0.97, 1.16; nobeam bins 2–3 0.66, 0.62.
 
-**Those ratios are not the test.** The shipped `S_starting_point` is the power
-of the *same* simulated H I realisation the mocks inject — equal to it to
-<1% in every bin (`7.31e-6` vs `7.30e-6` in bin 0, and so on) — so every
-chain starts at the answer, and wherever the data do not constrain `S` it
-stays there. What the data actually pin down shows in the cross-power of the
-recovered `s` samples with the true H I, per bin (`x_sample` every 50th, after
-burn-in):
+**Those ratios are not the test on their own.** The shipped
+`S_starting_point` is the power of the *same* simulated H I realisation the
+mocks inject — equal to it to <1% in every bin (`7.31e-6` vs `7.30e-6` in
+bin 0, and so on) — so every chain starts at the answer, and wherever the
+data do not constrain `S` it stays there. So control and beam were rerun
+from `S` x 0.1 and x 10 (`--S-start-scale`, `TAG=_S0.1` / `_S10`; same seed,
+1500 / 2000 samples). Where both ends meet, the data constrain the bin;
+where they stay apart, it is prior:
 
-| arm | | bin 0 | 1 | 2 | 3 | 4 |
+| arm | start | bin 0 | 1 | 2 | 3 | 4 |
 |---|---|---|---|---|---|---|
-| control | auto / true | 0.13 | 0.68 | 0.92 | 0.98 | 1.00 |
-| | **cross / true** | 0.073 | 0.33 | 0.40 | 0.20 | 0.03 |
-| beam | auto / true | 1.01 | 1.13 | 0.88 | 0.77 | 1.51 |
-| | **cross / true** | 0.16 | 0.07 | 0.011 | 0.003 | 0.000 |
-| nocollapse | cross / true | 0.16 | 0.07 | 0.011 | 0.003 | 0.000 |
-| nobeam | auto / true | 14.9 | 0.31 | 0.010 | 0.06 | 0.60 |
-| | cross / true | 0.17 | 0.05 | 0.000 | 0.001 | 0.000 |
+| control | x 0.1 | 0.13 | 0.68 | 0.92 | 0.98 | **0.14** |
+| | x 1 | 0.13 | 0.68 | 0.92 | 0.98 | 1.00 |
+| | x 10 | 0.13 | 0.68 | 0.92 | 0.98 | **1.18** |
+| beam | x 0.1 | 1.00 | 1.12 | 0.88 | **0.10** | **0.14** |
+| | x 1 | 1.02 | 1.13 | 0.89 | 0.77 | 1.51 |
+| | x 10 | 1.00 | 1.12 | 0.88 | **0.70** | **3.2** |
+
+With a shared seed the chains are coupled, so once they forget their start
+they coincide: the x 0.1 and x 10 `S` chains agree to < 0.1% from sample 21–187
+(control bins 0–3) and 136–350 (beam bins 0–2), and never in the rest
+(final ratio x0.1/x10: control bin 4 0.16; beam bins 3, 4 0.17, 0.06). Both
+ends coalescing is the convergence evidence; the means then agree by
+construction.
+
+Cross-power of the recovered `s` with the true H I (`x_sample` every 50th,
+from sample 400), over every mode in the bin and over the modes the beam
+passes (band-mean `|B(k_perp)|^2 >= 0.5`, which is 28 / 3.8 / 1.1 / 1.3 /
+1.3% of the modes in bins 0–4):
+
+| arm | modes | bin 0 | 1 | 2 | 3 | 4 |
+|---|---|---|---|---|---|---|
+| control | all | 0.072 | 0.33 | 0.40 | 0.20 | 0.03 |
+| | `|B|^2 >= 0.5` | 0.13 | 0.45 | 0.45 | 0.19 | 0.03 |
+| beam (any start) | all | 0.16 | 0.071 | 0.011 | 0.000–0.003 | 0.000 |
+| | `|B|^2 >= 0.5` | 0.30 | 0.50 | 0.42 | 0.02–0.13 | 0.003–0.06 |
+| nobeam | all | 0.17 | 0.05 | 0.000 | 0.001 | 0.000 |
 
 Read together:
 
@@ -1145,33 +1165,38 @@ Read together:
   with no more H I in it than the beamed arm — the data dragged `S` *away*
   from a correct start, which no prior memory can explain. That is the
   17.4 MHz beam-ripple leakage (finding 1) landing at `k_par = 0.073`.
-- **Modelling the beam removes that contamination, but the "~1" in bins 1–4
-  is mostly the starting point, not a measurement.** The recovered field has
-  the right power and almost none of the actual H I beyond bin 0 (cross/true
-  0.07 in bin 1, 0.01 in bin 2). The beam leaves the data little H I
-  information above bin 1 — consistent with finding 2.
-- **Bin 0 at ~1.0 is answered:** not leakage (nobeam has the same H I
-  cross-power with 15x the auto), but `S` held near its start by modes the
-  data barely inform. The control's 0.13 is the data *actively* pulling `S`
-  down through the foreground-degenerate modes.
-- **The collapsed `S` step made no measurable difference.** Identical in bins
-  0–2 (to 3 decimals, same seed); in bins 3–4 it wanders more (drift 1.31 vs
-  0.97, scatter 0.15 vs 0.05) — consistent with exploring a broad,
-  data-poor posterior faster rather than being stuck near the start, but
-  neither arm is constrained there. The random walk predicted from the
-  3-sample smoke run did not show up in bins 1–2. The collapse is valid and
-  stays on, but it is not a demonstrated fix.
-- **The same caveat reaches the beamless sampler.** The control's bins 3–4
-  sit at 0.98 and 1.00 with cross/true of only 0.20 and 0.03, so "high-k
-  power recovered" there may also be start memory. The systematics injection
-  runs start from the same `S` and inject the same H I cube. Their *arm
-  differences* are unaffected (same start in both arms), but any absolute
-  recovery claimed at high k should be re-checked.
-
-**Running now (2026-10-20):** control and beam started from `S` x 0.1 and
-x 10 (`--S-start-scale`, `TAG=_S0.1` / `_S10`). If both ends converge to the
-same value in a bin, the data constrain it there; if they stay apart, it is
-prior. That is the test the ratios above should have been.
+- **With the beam modelled, bins 0–2 are measured, bins 3–4 are prior.**
+  The x 0.1 and x 10 chains coalesce in bins 0–2 (1.00, 1.12, 0.88 of the
+  true power) and stay a factor 6–16 apart in bins 3–4. Against the
+  beamless control the beam costs one bin: the control is data-determined
+  through bin 3 and prior in bin 4.
+- **An earlier reading of the cross-power was wrong.** All-mode cross/true
+  of 0.07 and 0.011 in bins 1–2 looked like "the right power, none of the
+  H I". It is dilution: 96–99% of the modes in those bins are past the beam
+  cutoff and filled from `S`. In the modes the beam passes, the beamed
+  recovery correlates with the H I as well as the control does (0.50 / 0.42
+  vs 0.45 / 0.45). `S` is constrained by those few percent of modes, which
+  is what finding 2's `q` table predicts.
+- **Bin 0 is not explained.** Both arms are converged there and they
+  disagree: the control lands at 0.13 (the known foreground-degeneracy loss
+  plus `S`-step deflation, "One mechanism, both directions" above), the
+  beamed arm at 1.00, with cross/true 0.30 against 0.13 in the beam-passed
+  modes. The mock is exactly the model in both (6-mode foreground, model beam
+  = mock beam), so this is not leakage. The deflation feedback looks absent
+  with the beam, and why is open. The next test is the beamed arm with `S`
+  held at the prior, as was done for the control (0.35); no `run_gibbs.py`
+  option for that exists yet.
+- **The collapsed `S` step made no measurable difference.** Identical to the
+  old step in bins 0–2; in bins 3–4, which are prior-dominated in both, it
+  wanders more (drift 1.31 vs 0.97). The random walk predicted from the
+  3-sample smoke run did not show up. The collapse is valid and stays on,
+  but it is not a demonstrated fix.
+- **The beamless sampler: bin 3 is measured, bin 4 is start memory.** The
+  control's 1.00 in bin 4 is 0.14 or 1.18 from the other starts. The
+  systematics injection runs start from the same `S` and inject the same
+  H I cube, so their absolute bin-4 numbers (e.g. "1.17" in the S-held
+  comparison above) are prior, not recovery. Arm *differences* there are
+  unaffected (same start in both arms), and bins 0–3 stand.
 
 **5. Deflation was not revisited.** `deflate_foreground` projects the span of
 `Uf` out of a systematic's templates. With a beam the model's foreground span

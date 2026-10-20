@@ -233,9 +233,10 @@ standing-wave period, and leaving the beam out of the model put that into the
 lowest k-bin. `scripts/beam_injection.py` and
 `submit_beam_injection.sh` run the known-answer test. **Caveat:** the shipped
 `S_starting_point` is the power of the same simulated HI the mocks inject, so
-chains start at the answer; judge recovery by cross-correlation with the
-injected HI, or start with `--S-start-scale`. See `docs/STATUS.md`, "The beam
-in the MODEL".
+chains start at the answer; start with `--S-start-scale` (e.g. 0.1 and 10)
+and trust only the bins where both ends converge. On the injection mock that
+is bins 0–3 without a beam and bins 0–2 with one; the top bin is prior in
+both. See `docs/STATUS.md`, "The beam in the MODEL".
 
 ### Disk
 
