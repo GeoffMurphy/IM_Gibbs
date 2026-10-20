@@ -999,7 +999,8 @@ phase are a realistic stand-in, not the L-band truth. Without access to a
 measured beam, the Gaussian rows above are what can be reproduced; the
 leakage needs spectral structure in the beam, which a Gaussian does not have.
 
-**2. The beam starves the `S` step of data — fixed by collapsing it.**
+**2. The beam starves the `S` step of data. The collapsed step is valid but
+the injection test (finding 4) shows no measurable benefit.**
 Fraction of modes per bin where the data outweigh the prior,
 `q = N^-1 <w> <|B|^2> S > 1`, with `S` from `S_starting_point_cropped.npy`:
 
@@ -1017,8 +1018,8 @@ inverse-gamma step re-estimates `S` mostly from its own draw: valid in the
 limit, but a near random walk (a 3-sample smoke run showed bins 1–2 climbing
 faster with the beam). The Gibbs step is not *wrong*, it mixes badly.
 
-**Fix (`run_gibbs.py`, on by default with a beam): a partially collapsed Gibbs
-step.** Draw `S` from `p(S | s_visible)` — the inverse-gamma over the modes
+**Partially collapsed Gibbs step (`run_gibbs.py`, on by default with a
+beam).** Draw `S` from `p(S | s_visible)` — the inverse-gamma over the modes
 with band-averaged `|B|^2 >= --beam-threshold` (default 1e-3) — then apply it
 to *every* mode in the bin and draw all of `s` from `p(s | S, d)` as before.
 If the excluded modes carry no data information, marginalising them out of
@@ -1099,39 +1100,78 @@ parameter and matvecs are not the figure of merit — but a sampler that does
 not finish a sample has no samples to converge in, so this one is not
 optional.
 
-**4. Known-answer injection test** (`scripts/beam_injection.py`,
-`submit_beam_injection.sh`; ilifu, `~/imgibbs-beam`, outputs in
-`/scratch3/users/geoffmurphy/beam_injection`; these runs used the measured
-UHF beam, while the scripts default to a Gaussian). Mock: simulated H I (0.86 mK
-rms) + the real cube's 6-mode Legendre foreground (0.12 K rms) convolved with
-the measured beam, real mask, sampler noise (1.1 mK). Ratio of the posterior
-mean P(k) to the true H I power per bin, 200 samples burn-in:
+**4. Known-answer injection test — and the chains start at the answer.**
+(`scripts/beam_injection.py`, `submit_beam_injection.sh`; ilifu,
+`~/imgibbs-beam`, outputs in `/scratch3/users/geoffmurphy/beam_injection`;
+these runs used the measured UHF beam, while the scripts default to a
+Gaussian.) Mock: simulated H I (0.86 mK rms) + the real cube's 6-mode
+Legendre foreground (0.12 K rms) convolved with the beam, real mask, sampler
+noise (1.1 mK). Finished 2026-10-20; 300 samples burn-in.
+
+Ratio of the posterior-mean P(k) (the `S` chain) to the true H I power:
 
 | arm | bin 0 (0.068) | 1 (0.160) | 2 (0.374) | 3 (0.875) | 4 (2.046) |
 |---|---|---|---|---|---|
-| control: unbeamed mock, no beam model (1500) | 0.13 ± 0.02 | 0.68 ± 0.02 | 0.92 ± 0.01 | 0.98 ± 0.01 | 1.00 ± 0.02 |
-| nobeam: beamed mock, no beam model (1500) | **15.0 ± 0.8** | 0.31 ± 0.01 | 0.010 ± 0.004 | 0.06 ± 0.02 | 0.61 ± 0.08 |
-| beam: beamed mock, beam + collapse + exact precond — **INTERIM, 419 of 3000** | 0.98 ± 0.18 | 1.10 ± 0.07 | 0.87 ± 0.06 | 0.76 ± 0.05 | 1.32 ± 0.06 |
-| nocollapse: as beam, old `S` step | running (3000) | | | | |
+| control: unbeamed mock, no beam (1500) | 0.13 ± 0.02 | 0.68 ± 0.02 | 0.92 ± 0.01 | 0.98 ± 0.01 | 1.00 ± 0.02 |
+| nobeam: beamed mock, no beam in the model (1500) | **15.0 ± 0.8** | 0.31 ± 0.01 | 0.010 ± 0.002 | 0.06 ± 0.02 | 0.59 ± 0.07 |
+| beam: beam modelled, collapsed `S` (3000) | 1.02 ± 0.16 | 1.13 ± 0.08 | 0.89 ± 0.05 | 0.77 ± 0.15 | 1.51 ± 0.18 |
+| nocollapse: beam modelled, old `S` step (3000) | 1.02 ± 0.16 | 1.13 ± 0.08 | 0.90 ± 0.06 | 0.73 ± 0.05 | 1.31 ± 0.13 |
 
-The control reproduces the known low-k loss (13% in bin 0, from the
-foreground basis — see "The control arm loses low-k power"). Leaving the
-beam out is catastrophic: bin 0 is 15x high — the 17.4 MHz beam-ripple
-leakage of finding 1 lands at `k_par = 0.073`, inside bin 0 — and bins 1–3
-are suppressed by the unmodelled smoothing. Its bins 2–3 also drift (second
-half / first half 0.59, 0.57): not converged either.
+Drift (second half / first half of the post-burn-in chain): control
+0.98–1.02; beam 1.08, 1.02, 1.01, **1.31, 1.19**; nocollapse 1.08, 1.03,
+0.99, 0.97, 1.16; nobeam bins 2–3 0.66, 0.62.
 
-**The beam row is interim and must not be quoted.** 219 post-burn-in samples,
-and still drifting down in every bin (second half / first half 0.93–0.97).
-Against the true power of the beam-visible modes the ratios are 0.98, 1.08,
-1.06, 0.92, 1.37. Two things to check when the run finishes:
-- **Bin 0 at 0.98 is suspicious, not good news.** The beamless control loses
-  87% of bin 0 to the foreground basis, and modelling a beam has no obvious
-  way to undo that. Likelier: the same ~13% retained plus beam-ripple
-  leakage the model has not fully absorbed, summing to ~1 by coincidence.
-  Test: compare the recovered `s` with the true H I mode by mode in bin 0,
-  and run a beamed mock with the H I switched off.
-- **Bin 4 at 1.3** — noise-dominated, possibly deconvolution amplifying noise.
+**Those ratios are not the test.** The shipped `S_starting_point` is the power
+of the *same* simulated H I realisation the mocks inject — equal to it to
+<1% in every bin (`7.31e-6` vs `7.30e-6` in bin 0, and so on) — so every
+chain starts at the answer, and wherever the data do not constrain `S` it
+stays there. What the data actually pin down shows in the cross-power of the
+recovered `s` samples with the true H I, per bin (`x_sample` every 50th, after
+burn-in):
+
+| arm | | bin 0 | 1 | 2 | 3 | 4 |
+|---|---|---|---|---|---|---|
+| control | auto / true | 0.13 | 0.68 | 0.92 | 0.98 | 1.00 |
+| | **cross / true** | 0.073 | 0.33 | 0.40 | 0.20 | 0.03 |
+| beam | auto / true | 1.01 | 1.13 | 0.88 | 0.77 | 1.51 |
+| | **cross / true** | 0.16 | 0.07 | 0.011 | 0.003 | 0.000 |
+| nocollapse | cross / true | 0.16 | 0.07 | 0.011 | 0.003 | 0.000 |
+| nobeam | auto / true | 14.9 | 0.31 | 0.010 | 0.06 | 0.60 |
+| | cross / true | 0.17 | 0.05 | 0.000 | 0.001 | 0.000 |
+
+Read together:
+
+- **Leaving the beam out is wrong, robustly.** Its bin 0 is 15x the truth
+  with no more H I in it than the beamed arm — the data dragged `S` *away*
+  from a correct start, which no prior memory can explain. That is the
+  17.4 MHz beam-ripple leakage (finding 1) landing at `k_par = 0.073`.
+- **Modelling the beam removes that contamination, but the "~1" in bins 1–4
+  is mostly the starting point, not a measurement.** The recovered field has
+  the right power and almost none of the actual H I beyond bin 0 (cross/true
+  0.07 in bin 1, 0.01 in bin 2). The beam leaves the data little H I
+  information above bin 1 — consistent with finding 2.
+- **Bin 0 at ~1.0 is answered:** not leakage (nobeam has the same H I
+  cross-power with 15x the auto), but `S` held near its start by modes the
+  data barely inform. The control's 0.13 is the data *actively* pulling `S`
+  down through the foreground-degenerate modes.
+- **The collapsed `S` step made no measurable difference.** Identical in bins
+  0–2 (to 3 decimals, same seed); in bins 3–4 it wanders more (drift 1.31 vs
+  0.97, scatter 0.15 vs 0.05) — consistent with exploring a broad,
+  data-poor posterior faster rather than being stuck near the start, but
+  neither arm is constrained there. The random walk predicted from the
+  3-sample smoke run did not show up in bins 1–2. The collapse is valid and
+  stays on, but it is not a demonstrated fix.
+- **The same caveat reaches the beamless sampler.** The control's bins 3–4
+  sit at 0.98 and 1.00 with cross/true of only 0.20 and 0.03, so "high-k
+  power recovered" there may also be start memory. The systematics injection
+  runs start from the same `S` and inject the same H I cube. Their *arm
+  differences* are unaffected (same start in both arms), but any absolute
+  recovery claimed at high k should be re-checked.
+
+**Running now (2026-10-20):** control and beam started from `S` x 0.1 and
+x 10 (`--S-start-scale`, `TAG=_S0.1` / `_S10`). If both ends converge to the
+same value in a bin, the data constrain it there; if they stay apart, it is
+prior. That is the test the ratios above should have been.
 
 **5. Deflation was not revisited.** `deflate_foreground` projects the span of
 `Uf` out of a systematic's templates. With a beam the model's foreground span

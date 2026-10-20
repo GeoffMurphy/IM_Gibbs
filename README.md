@@ -220,7 +220,8 @@ sampler unchanged.
 Two things change with a beam, and both are on by default:
 
 - **The `S` step is collapsed.** `S` is drawn from the Fourier modes the beam
-  leaves visible (`--beam-threshold`), and the rest are marginalised.
+  leaves visible (`--beam-threshold`), and the rest are marginalised. Valid,
+  but the injection test shows no measurable benefit so far.
 - **The foreground block of the preconditioner is exact.** With the real
   mask it covers the stiff low-order modes (`--fg-dense-modes`), at about
   1.4 GB of memory. Without it LGMRES does not converge in useful time.
@@ -230,8 +231,11 @@ foreground, but a measured MeerKAT beam's spectral ripple pushed ~0.4 mK
 (about half the HI rms) outside the foreground basis at the 17.4 MHz
 standing-wave period, and leaving the beam out of the model put that into the
 lowest k-bin. `scripts/beam_injection.py` and
-`submit_beam_injection.sh` run the known-answer test. See `docs/STATUS.md`,
-"The beam in the MODEL".
+`submit_beam_injection.sh` run the known-answer test. **Caveat:** the shipped
+`S_starting_point` is the power of the same simulated HI the mocks inject, so
+chains start at the answer; judge recovery by cross-correlation with the
+injected HI, or start with `--S-start-scale`. See `docs/STATUS.md`, "The beam
+in the MODEL".
 
 ### Disk
 
