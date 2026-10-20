@@ -99,6 +99,13 @@ def parse_args():
                    help='write the full x sample every N iterations '
                         '(default 1). Each is ~13 MB; Pk/F/g traces are '
                         'always written every iteration.')
+    p.add_argument('--S-start-scale', type=float, default=1.0,
+                   help='multiply the starting S by this (default 1). The '
+                        'shipped S_starting_point is the power of the same '
+                        'simulated H I the injection mocks use, so a chain '
+                        'started from it starts at the answer; start from '
+                        '0.1 and 10 to see whether the data, not the start, '
+                        'set the result.')
     p.add_argument('--no-flagging', action='store_true',
                    help='do not downweight flagged (zero) voxels')
     g = p.add_argument_group(
@@ -251,7 +258,7 @@ def main():
                                             max_bins=N_K_BINS)
     occupied_bins = np.unique(idxs)
     occupied_bins = occupied_bins[occupied_bins > 0]
-    S = load(S_FILE)
+    S = load(S_FILE) * args.S_start_scale
     check_grid_matches_S(grid, kbin_meta)
     if S.size != np.prod(shape):
         raise SystemExit(f'{S_FILE} has {S.size} entries, this grid has '
@@ -418,6 +425,7 @@ def main():
                    'n_modes': n_modes, 'n_samples': args.n_samples,
                    'T_sys': T_SYS, 'del_nu_Hz': DEL_NU, 'del_t_s': DEL_T,
                    'tol': args.tol, 'seed': args.seed, 'flagging': flagging,
+                   'S_start_scale': args.S_start_scale,
                    'groundspill': bool(args.groundspill),
                    'gs_period_MHz': args.gs_period if args.groundspill else None,
                    'gs_harmonics': args.gs_harmonics if args.groundspill else None,

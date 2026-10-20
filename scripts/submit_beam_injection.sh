@@ -54,6 +54,8 @@ case "$ARM" in
 esac
 
 echo "arm $ARM on $(hostname), $(date)"
-"$PYTHON" -u scripts/run_gibbs.py 6 --data "$OUT/$DATA.npy" --out "$OUT/$ARM" \
+# TAG (optional) names a variant of an arm, e.g. TAG=_S0.1 with
+# --S-start-scale 0.1, so it gets its own output directory.
+"$PYTHON" -u scripts/run_gibbs.py 6 --data "$OUT/$DATA.npy" --out "$OUT/$ARM${TAG:-}" \
     --seed 1 --save-x-every 50 "${EXTRA[@]}" "$@"
 echo "done $(date)"
