@@ -115,6 +115,16 @@ def parse_args():
                         'power of the sampled signal field, the quantity the '
                         'S draw would have used. Same as '
                         'systematics_injection.py --fix-S.')
+    p.add_argument('--f-prior-mean', choices=('data', 'zero'),
+                   default='data',
+                   help="centre of the foreground prior (default 'data': "
+                        "the data's own projection onto the foreground "
+                        "basis). F is sampled from the scatter of f about "
+                        "this centre; with 'data' that scatter is tiny, F "
+                        "collapses and the prior pins f to the data -- a "
+                        "projection rather than a marginalisation. See "
+                        "docs/STATUS.md, finding 4 of 'The beam in the "
+                        "MODEL'.")
     p.add_argument('--no-flagging', action='store_true',
                    help='do not downweight flagged (zero) voxels')
     g = p.add_argument_group(
@@ -384,15 +394,18 @@ def main():
     # Starting points
     # ------------------------------------------------------------------
     s_mean = np.zeros(rfft_shape)                # zero-mean signal prior
-    f_mean = (d_2d @ evecs.T).reshape(shape[0], shape[1], n_modes)
+    # The data's own projection onto the foreground basis: the starting
+    # point for f, and (--f-prior-mean data) the centre of its prior.
+    f_proj = (d_2d @ evecs.T).reshape(shape[0], shape[1], n_modes)
+    f_mean = f_proj if args.f_prior_mean == 'data' else np.zeros_like(f_proj)
 
-    # Perturb before the inverse-Wishart draw: at f == f_mean exactly the
+    # Perturb before the inverse-Wishart draw: at f == f_proj exactly the
     # scatter matrix is singular, so FCS needs the spread.
-    f_init = f_mean * np.random.normal(1.0, 0.05, f_mean.shape)
+    f_init = f_proj * np.random.normal(1.0, 0.05, f_proj.shape)
     F = np.diag(FCS(f_init.reshape(-1, n_modes)))
 
     x = np.concatenate([s_mean.real.flatten(), s_mean.imag.flatten(),
-                        f_mean.flatten()]
+                        f_proj.flatten()]
                        + ([g_mean.flatten()] if sys_basis is not None else []))
 
     A_calls = [0]
@@ -436,6 +449,7 @@ def main():
                    'tol': args.tol, 'seed': args.seed, 'flagging': flagging,
                    'S_start_scale': args.S_start_scale,
                    'fix_S': bool(args.fix_S),
+                   'f_prior_mean': args.f_prior_mean,
                    'groundspill': bool(args.groundspill),
                    'gs_period_MHz': args.gs_period if args.groundspill else None,
                    'gs_harmonics': args.gs_harmonics if args.groundspill else None,
