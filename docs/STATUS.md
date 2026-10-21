@@ -1177,15 +1177,58 @@ Read together:
   recovery correlates with the H I as well as the control does (0.50 / 0.42
   vs 0.45 / 0.45). `S` is constrained by those few percent of modes, which
   is what finding 2's `q` table predicts.
-- **Bin 0 is not explained.** Both arms are converged there and they
-  disagree: the control lands at 0.13 (the known foreground-degeneracy loss
-  plus `S`-step deflation, "One mechanism, both directions" above), the
-  beamed arm at 1.00, with cross/true 0.30 against 0.13 in the beam-passed
-  modes. The mock is exactly the model in both (6-mode foreground, model beam
-  = mock beam), so this is not leakage. The deflation feedback looks absent
-  with the beam, and why is open. The next test is the beamed arm with `S`
-  held at the prior, as was done for the control (0.35); no `run_gibbs.py`
-  option for that exists yet.
+- **Bin 0: the difference is the foreground prior, not the beam.** Both
+  arms converge there and disagree (control 0.13, beam 1.00), so both were
+  rerun with `S` held at the truth (`run_gibbs.py --fix-S`, 1000 samples,
+  `TAG=_fixS`):
+
+  | arm, `S` held | bin 0 | 1 | 2 | 3 | 4 |
+  |---|---|---|---|---|---|
+  | control: power of the `s` samples / true | **0.61** | 0.88 | 0.97 | 1.00 | 1.00 |
+  | beam: power of the `s` samples / true | **1.00** | 1.01 | 0.99 | 1.00 | 1.00 |
+  | cross / true, control | 0.15 | 0.37 | 0.41 | 0.20 | 0.03 |
+  | cross / true, beam (`|B|^2 >= 0.5`) | 0.30 | 0.48 | 0.45 | 0.17 | 0.02 |
+
+  With `S` fixed at the truth and a correct model, the power of a posterior
+  sample should come out at the truth. The control is 0.61, so its bin-0
+  modes are being held below their prior by something other than the data.
+  (The S-held control from `systematics_injection.py`, 0.35, used that
+  script's own mock; 0.61 is the like-for-like number here.)
+  The cause is the foreground prior. `run_gibbs.py` centres it on the data's
+  own Legendre projection (`f_mean = Uf^T d`) and samples its variance `F`
+  from the scatter of `f` about that mean. The sampled `F` (mean of samples
+  400–1000, modes 0–5):
+
+  | arm | F_0 | F_1 | F_2 | F_3 | F_4 | F_5 |
+  |---|---|---|---|---|---|---|
+  | control (`S` held or sampled) | 4e-9 – 7e-9 | ~1e-8 | ~2e-8 | ~1e-8 | ~2e-8 | ~2e-8 |
+  | beam (`S` held or sampled) | **92** | 0.10 | 3e-4 | 6e-5 | 5e-5 | 3e-5 |
+
+  (K², per pixel amplitude.) **Without the beam the foreground prior
+  collapses onto the data**: `f` lands next to `f_mean`, so the scatter is
+  tiny, `F` shrinks to ~1e-8 K² (0.1 mK), and that pins `f` harder. The data's
+  projection onto the foreground basis, H I included, then belongs to `f` at
+  no cost, and `s` is pushed out of the foreground-degenerate modes. In
+  practice that is a projection, not a marginalisation. It explains why the
+  sampler and a PCA clean lose the same ~85% at bin 0 (0.13 vs 0.16, "The
+  PCA comparison" above), and why holding `S` only partly undoes it.
+  **With the beam the same prior is inconsistent**: the model term is
+  `B Uf f`, but `f_mean` is the projection of data that are already beamed,
+  so `B Uf f_mean` applies the beam twice. `f` has to move away from
+  `f_mean`, `F` grows to 92 K² in mode 0, and the prior is effectively flat.
+  The foreground-degenerate modes are then genuinely marginalised: `s` there
+  is drawn from `S`, and `S` is set by the modes the foreground cannot mimic.
+  That gives the beamed arm's 1.00. It is the H I-correlated part that
+  matters, and that is the same in both (all-mode cross/true 0.16 vs 0.15).
+
+  So the beamed bin 0 is not better recovery. It is the behaviour the
+  README describes for marginalisation, reached by accident, because the
+  beam broke a data-centred prior. Two things follow. First, the beamless
+  sampler's foreground prior needs looking at; that is outside the beam
+  work. A zero-mean prior with `F` sampled around zero would test it (a
+  ~35 min control run). Second, with a beam `f_mean` should at least be
+  consistent with the model. As it stands it only works because it is so
+  wrong that `F` inflates to uninformative.
 - **The collapsed `S` step made no measurable difference.** Identical to the
   old step in bins 0–2; in bins 3–4, which are prior-dominated in both, it
   wanders more (drift 1.31 vs 0.97). The random walk predicted from the
