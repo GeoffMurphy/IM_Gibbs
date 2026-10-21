@@ -1223,12 +1223,51 @@ Read together:
 
   So the beamed bin 0 is not better recovery. It is the behaviour the
   README describes for marginalisation, reached by accident, because the
-  beam broke a data-centred prior. Two things follow. First, the beamless
-  sampler's foreground prior needs looking at; that is outside the beam
-  work. A zero-mean prior with `F` sampled around zero would test it (a
-  ~35 min control run). Second, with a beam `f_mean` should at least be
-  consistent with the model. As it stands it only works because it is so
-  wrong that `F` inflates to uninformative.
+  beam broke a data-centred prior.
+
+  **The zero-mean prior was tested, and it is not the fix without a beam.**
+  `run_gibbs.py --f-prior-mean zero` centres the prior on zero, so `F` is
+  sampled from the foregrounds' own scatter (`TAG=_f0`; 1500 samples, or
+  1000 with `S` held):
+
+  | arm, zero-mean prior | bin 0 | 1 | 2 | 3 | 4 |
+  |---|---|---|---|---|---|
+  | control, `S` sampled: ratio | **24.2 ± 1.9** | 1.21 | 1.06 | 0.98 | 1.00 |
+  | control, `S` sampled: cross / true | 0.46 | 0.43 | 0.43 | 0.20 | 0.03 |
+  | control, `S` held: power / true | **1.59** | 1.04 | 1.01 | 1.00 | 1.00 |
+  | control, `S` held: cross / true | 0.19 | 0.40 | 0.42 | 0.20 | 0.03 |
+  | beam, `S` sampled: ratio | 0.99 ± 0.15 | 1.12 | 0.88 | 0.65 | 1.37 |
+  | beam, `S` sampled: cross / true | 0.15 | 0.07 | 0.011 | 0.003 | 0.001 |
+
+  Sampled `F` (K², modes 0–5): control `1.7e3, 0.14, 2.5e-4, 1.3e-5,
+  4.0e-6, 4.6e-6`; beam `2.7e3, 1.2, 1.9e-3, 1.7e-4, 1.4e-4, 7.9e-5`.
+
+  Without a beam the bin-0 failure flips sign. The high-order foreground
+  amplitudes are small, so `F_3`–`F_5` come out at 4e-6 to 1e-5 K² — the
+  same size as the H I power in bin 0 (7.3e-6). In those directions the
+  foreground prior is no wider than the signal prior, so the posterior
+  splits the real foreground between `f` and `s` in roughly equal shares.
+  `s` picks up foreground (power 1.6x with `S` held), `S` inflates, and the
+  feedback carries it to 24x. The H I-correlated part does improve
+  (cross/true 0.46 vs 0.07), which is the point of not pinning `f`, but it
+  is buried. So **a Gaussian foreground prior whose variance is sampled from
+  `f` itself fails at the lowest k whichever way it is centred**: centred
+  on the data it projects the H I out, centred on zero it leaks foreground
+  in. What would genuinely marginalise is a prior much wider than the
+  signal in every foreground direction — flat, or `F` fixed well above any
+  plausible H I power. That is a change to the published sampler and is
+  left open.
+
+  **With a beam both centres give the same answer** (bin 0 0.99 vs 1.00,
+  bins 1–2 identical). The foreground modes the beam removes are not
+  constrained by the data, so they are filled from the prior, which keeps
+  `F` broad — 8e-5 K² in mode 5, ten times the bin-0 H I power — and
+  neither failure mode appears. **`run_gibbs.py` therefore defaults to
+  `--f-prior-mean auto`**: the data-centred prior without a beam (the
+  published behaviour, unchanged), and the zero-centred one with a beam,
+  which removes the double-beamed `B Uf f_mean`. The beamed results above
+  were all run with the data-centred prior and stand. They agree with the
+  zero-centred run.
 - **The collapsed `S` step made no measurable difference.** Identical to the
   old step in bins 0–2; in bins 3–4, which are prior-dominated in both, it
   wanders more (drift 1.31 vs 0.97). The random walk predicted from the

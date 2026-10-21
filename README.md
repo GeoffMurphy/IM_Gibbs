@@ -25,8 +25,12 @@ PCA clean on the same cube, k-bins, estimator and truth, the sampler retains
 substantially more signal at intermediate k — 0.86 against 0.46 at
 k = 0.37 Mpc⁻¹, 0.99 against 0.71 at k = 0.87 — so that loss does not have to
 be corrected for after the fact. **At the lowest bin the two are equivalent**
-(0.13 against 0.16): both lose ~85%, and marginalising does not rescue it. See
-`docs/STATUS.md`.
+(0.13 against 0.16): both lose ~85%. That is because the foreground prior is
+centred on the data's own projection and its variance is sampled about that
+centre, so it collapses and pins the foreground to the data, which at the
+lowest k amounts to a projection. Centring it on zero instead
+(`--f-prior-mean zero`) leaks foreground into the signal there. See
+`docs/STATUS.md`, "The beam in the MODEL", finding 4.
 
 This version runs on the **real MeerKLASS L2021 footprint** — a non-cubic
 (70, 45, 250) grid with strongly anisotropic voxels (~8.6 x 8.6 x 1.0 Mpc) and
@@ -217,7 +221,7 @@ you have access to one, and none is distributed here). `S` is then the power
 spectrum of the unconvolved sky. `beam=None` is the default and leaves the
 sampler unchanged.
 
-Two things change with a beam, and both are on by default:
+Three things change with a beam, and all are on by default:
 
 - **The `S` step is collapsed.** `S` is drawn from the Fourier modes the beam
   leaves visible (`--beam-threshold`), and the rest are marginalised. Valid,
@@ -225,6 +229,9 @@ Two things change with a beam, and both are on by default:
 - **The foreground block of the preconditioner is exact.** With the real
   mask it covers the stiff low-order modes (`--fg-dense-modes`), at about
   1.4 GB of memory. Without it LGMRES does not converge in useful time.
+- **The foreground prior is centred on zero** (`--f-prior-mean auto`), not
+  on the data's projection, which is already beamed and would be beamed
+  twice by the model. The beamless default is unchanged.
 
 A beamed sample takes ~9 s on a laptop. A smooth Gaussian leaks almost no
 foreground, but a measured MeerKAT beam's spectral ripple pushed ~0.4 mK

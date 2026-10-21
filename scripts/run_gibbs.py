@@ -115,16 +115,20 @@ def parse_args():
                         'power of the sampled signal field, the quantity the '
                         'S draw would have used. Same as '
                         'systematics_injection.py --fix-S.')
-    p.add_argument('--f-prior-mean', choices=('data', 'zero'),
-                   default='data',
-                   help="centre of the foreground prior (default 'data': "
-                        "the data's own projection onto the foreground "
-                        "basis). F is sampled from the scatter of f about "
-                        "this centre; with 'data' that scatter is tiny, F "
-                        "collapses and the prior pins f to the data -- a "
-                        "projection rather than a marginalisation. See "
-                        "docs/STATUS.md, finding 4 of 'The beam in the "
-                        "MODEL'.")
+    p.add_argument('--f-prior-mean', choices=('auto', 'data', 'zero'),
+                   default='auto',
+                   help="centre of the foreground prior. 'data' is the "
+                        "data's own projection onto the foreground basis; "
+                        "'zero' is zero. 'auto' (default) is 'data' without "
+                        "a beam, the published behaviour, and 'zero' with "
+                        "one, because under a beam the data's projection is "
+                        "already beamed and B Uf f_mean would beam it twice. "
+                        "Without a beam neither choice is right at the "
+                        "lowest k: F is sampled about this centre, so 'data' "
+                        "collapses F and projects the H I out, and 'zero' "
+                        "makes F as small as the H I in the high-order modes "
+                        "and leaks foreground into s. See docs/STATUS.md, "
+                        "finding 4 of 'The beam in the MODEL'.")
     p.add_argument('--no-flagging', action='store_true',
                    help='do not downweight flagged (zero) voxels')
     g = p.add_argument_group(
@@ -397,7 +401,10 @@ def main():
     # The data's own projection onto the foreground basis: the starting
     # point for f, and (--f-prior-mean data) the centre of its prior.
     f_proj = (d_2d @ evecs.T).reshape(shape[0], shape[1], n_modes)
-    f_mean = f_proj if args.f_prior_mean == 'data' else np.zeros_like(f_proj)
+    f_prior = (args.f_prior_mean if args.f_prior_mean != 'auto'
+               else ('zero' if beam is not None else 'data'))
+    f_mean = f_proj if f_prior == 'data' else np.zeros_like(f_proj)
+    print(f'fg prior     : centred on {"the data projection" if f_prior == "data" else "zero"}')
 
     # Perturb before the inverse-Wishart draw: at f == f_proj exactly the
     # scatter matrix is singular, so FCS needs the spread.
@@ -449,7 +456,7 @@ def main():
                    'tol': args.tol, 'seed': args.seed, 'flagging': flagging,
                    'S_start_scale': args.S_start_scale,
                    'fix_S': bool(args.fix_S),
-                   'f_prior_mean': args.f_prior_mean,
+                   'f_prior_mean': f_prior,
                    'groundspill': bool(args.groundspill),
                    'gs_period_MHz': args.gs_period if args.groundspill else None,
                    'gs_harmonics': args.gs_harmonics if args.groundspill else None,
