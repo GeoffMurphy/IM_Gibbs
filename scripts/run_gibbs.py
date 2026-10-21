@@ -106,6 +106,15 @@ def parse_args():
                         'started from it starts at the answer; start from '
                         '0.1 and 10 to see whether the data, not the start, '
                         'set the result.')
+    p.add_argument('--fix-S', action='store_true',
+                   help='DIAGNOSTIC, not an analysis. Hold S at its starting '
+                        'value (the true simulated H I power, times '
+                        '--S-start-scale) instead of sampling it, to separate '
+                        'what the S step does from what the foreground basis '
+                        'and the beam do. Pk_trace then records the binned '
+                        'power of the sampled signal field, the quantity the '
+                        'S draw would have used. Same as '
+                        'systematics_injection.py --fix-S.')
     p.add_argument('--no-flagging', action='store_true',
                    help='do not downweight flagged (zero) voxels')
     g = p.add_argument_group(
@@ -426,6 +435,7 @@ def main():
                    'T_sys': T_SYS, 'del_nu_Hz': DEL_NU, 'del_t_s': DEL_T,
                    'tol': args.tol, 'seed': args.seed, 'flagging': flagging,
                    'S_start_scale': args.S_start_scale,
+                   'fix_S': bool(args.fix_S),
                    'groundspill': bool(args.groundspill),
                    'gs_period_MHz': args.gs_period if args.groundspill else None,
                    'gs_harmonics': args.gs_harmonics if args.groundspill else None,
@@ -488,19 +498,23 @@ def main():
         s = np.fft.fftn(s - np.mean(s), norm='ortho')
 
         binned_s, k_bins = bin_it(s, sig_k, idxs_S)
-        _, PkSample = SCS(np.concatenate(binned_s), np.concatenate(k_bins))
+        if args.fix_S:
+            # S is NOT updated; record the power the S draw would have used.
+            PkSample = np.array([np.mean(np.abs(b) ** 2) for b in binned_s])
+        else:
+            _, PkSample = SCS(np.concatenate(binned_s),
+                              np.concatenate(k_bins))
+            S = np.zeros(len(idxs))
+            for gg, bin_idx in enumerate(occupied_bins):
+                S[idxs == bin_idx] = PkSample[gg]
+            # idxs == 0 is DC plus the kz=0 plane plus sub-footprint modes. A
+            # flat 1e30 prior there would let the signal absorb foreground
+            # power in exactly the degenerate modes, so suppress them and
+            # leave only the true DC mode free to carry the overall mean.
+            S[idxs == 0] = 1e-12 * np.median(PkSample)
+            S[kbin_meta['dc_index']] = 1e30
 
-        S = np.zeros(len(idxs))
-        for gg, bin_idx in enumerate(occupied_bins):
-            S[idxs == bin_idx] = PkSample[gg]
-        # idxs == 0 is DC plus the kz=0 plane plus sub-footprint modes. A flat
-        # 1e30 prior there would let the signal absorb foreground power in
-        # exactly the degenerate modes, so suppress them and leave only the
-        # true DC mode free to carry the overall mean.
-        S[idxs == 0] = 1e-12 * np.median(PkSample)
-        S[kbin_meta['dc_index']] = 1e30
-
-        if beam is not None and not args.no_collapse:
+        if beam is not None and not args.no_collapse and not args.fix_S:
             # The excluded modes have |B|^2 < threshold, so each carries at
             # most this data/prior precision ratio. If S has grown enough to
             # make that non-negligible, the collapse is no longer exact.
