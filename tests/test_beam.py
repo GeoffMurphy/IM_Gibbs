@@ -419,6 +419,21 @@ def test_tabulated_gaussian_reproduces_gaussian_beam():
     assert np.allclose(tab.transfer, chromatic().transfer, atol=1e-4)
 
 
+def test_width_scale_stretches_a_tabulated_beam():
+    """``width_scale`` stretches the beam in angle: a 2% wider table of a
+    Gaussian is the Gaussian with a 2% wider FWHM."""
+    from imgibbs import tabulated_beam
+    nu_table = np.linspace(FREQS[0] - 1, FREQS[-1] + 1, 400)
+    k = np.linspace(0, 20, 4001)
+    sig = beam_fwhm(nu_table, 0.6, FREQS[0], 1.0) / FWHM_TO_SIGMA
+    table = np.exp(-0.5 * k[None, :] ** 2 * sig[:, None] ** 2)
+    tab = tabulated_beam(k, nu_table, table, FREQS, SHAPE, pix_deg=PIX,
+                         width_scale=1.02)
+    assert np.allclose(tab.transfer, chromatic(fwhm=0.6 * 1.02).transfer,
+                       atol=1e-4)
+    assert not np.allclose(tab.transfer, chromatic().transfer, atol=1e-3)
+
+
 def test_tabulated_beam_refuses_to_extrapolate():
     from imgibbs import tabulated_beam
     k = np.linspace(0, 20, 10)

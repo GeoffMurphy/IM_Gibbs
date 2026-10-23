@@ -166,6 +166,11 @@ def parse_args():
                     help='tabulated beam, imgibbs.load_beam_table format '
                          '(k, freq_MHz, transfer). Takes precedence over '
                          '--beam-fwhm.')
+    bm.add_argument('--beam-width-scale', type=float, default=1.0,
+                    help='stretch the model beam by this factor in angle '
+                         '(default 1; 1.02 is 2%% wider), for --beam-table '
+                         'or --beam-fwhm. For testing how accurately the '
+                         'beam must be known.')
     bm.add_argument('--beam-threshold', type=float, default=1e-3,
                     help='band-averaged |B|^2 below which a Fourier mode is '
                          'treated as invisible to the data and left out of '
@@ -336,10 +341,11 @@ def main():
     # ------------------------------------------------------------------
     nu_ref = None
     if args.beam_table is not None:
-        beam = load_beam_table(args.beam_table, grid.freqs, shape)
+        beam = load_beam_table(args.beam_table, grid.freqs, shape,
+                               width_scale=args.beam_width_scale)
         with np.load(args.beam_table) as tab:
-            fw = np.interp(grid.freqs[[0, -1]], tab['freq_MHz'],
-                           tab['fwhm_deg'])
+            fw = args.beam_width_scale * np.interp(
+                grid.freqs[[0, -1]], tab['freq_MHz'], tab['fwhm_deg'])
             src = str(tab['source'])
         print(f'beam         : tabulated ({src}), FWHM {fw[0]:.3f} deg at '
               f'{grid.freqs[0]:.1f} MHz -> {fw[1]:.3f} deg at '
@@ -347,10 +353,10 @@ def main():
     elif args.beam_fwhm is not None:
         nu_ref = (args.beam_nu_ref if args.beam_nu_ref is not None
                   else float(grid.freqs.mean()))
-        beam = gaussian_beam(grid.freqs, shape, args.beam_fwhm, nu_ref,
+        fwhm = args.beam_fwhm * args.beam_width_scale
+        beam = gaussian_beam(grid.freqs, shape, fwhm, nu_ref,
                              index=args.beam_index)
-        fw = beam_fwhm(grid.freqs[[0, -1]], args.beam_fwhm, nu_ref,
-                       args.beam_index)
+        fw = beam_fwhm(grid.freqs[[0, -1]], fwhm, nu_ref, args.beam_index)
         print(f'beam         : Gaussian, FWHM {fw[0]:.3f} deg at '
               f'{grid.freqs[0]:.1f} MHz -> {fw[1]:.3f} deg at '
               f'{grid.freqs[-1]:.1f} MHz (index {args.beam_index:g})')
@@ -476,6 +482,7 @@ def main():
                    'fg_refresh': args.fg_refresh,
                    'beam_fwhm_deg': args.beam_fwhm,
                    'beam_nu_ref_MHz': nu_ref,
+                   'beam_width_scale': args.beam_width_scale,
                    'beam_index': (args.beam_index if beam is not None
                                   else None),
                    'sig_k': sig_k.tolist(), **kbin_meta}, fh, indent=2,

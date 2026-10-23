@@ -23,6 +23,9 @@
 #   nocollapse  beamed mock, beam in the model, S from every mode  (old S step)
 #   nobeam      beamed mock, NO beam in the model                  (misspecified)
 #   control     unbeamed mock, no beam in the model                (baseline)
+#   fit         beamed mock, model beam given in the extra arguments
+#               (e.g. a Gaussian, or --beam-width-scale 1.02) -- for testing
+#               a model beam that differs from the mock's
 #
 # Beamed arms run at ~9 s/sample on a 12-core laptop with the exact-mask
 # foreground preconditioner (~1.4 GB extra memory); unbeamed at ~1.5-3 s on
@@ -33,7 +36,7 @@
 
 set -euo pipefail
 
-ARM=${1:?"Usage: sbatch scripts/submit_beam_injection.sh <beam|nocollapse|nobeam|control> [args...]"}
+ARM=${1:?"Usage: sbatch scripts/submit_beam_injection.sh <beam|nocollapse|nobeam|control|fit> [args...]"}
 shift
 
 cd "${SLURM_SUBMIT_DIR:-$(dirname "$0")/..}"
@@ -50,6 +53,7 @@ case "$ARM" in
   nocollapse) DATA=mock_beamed;  EXTRA=("${BEAM[@]}" --no-collapse) ;;
   nobeam)     DATA=mock_beamed;  EXTRA=() ;;
   control)    DATA=mock_control; EXTRA=() ;;
+  fit)        DATA=mock_beamed;  EXTRA=() ;;
   *) echo "unknown arm $ARM"; exit 2 ;;
 esac
 

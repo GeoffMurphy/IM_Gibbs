@@ -195,7 +195,7 @@ def radial_transfer(r_deg, profile, k):
 
 
 def tabulated_beam(k_table, nu_table, transfer_table, freqs, shape,
-                   pix_deg=PIX_DEG):
+                   pix_deg=PIX_DEG, width_scale=1.0):
     """A circular beam from a tabulated ``B(|k_perp|, nu)``.
 
     Linear interpolation in frequency between tabulated channels, then in
@@ -212,6 +212,10 @@ def tabulated_beam(k_table, nu_table, transfer_table, freqs, shape,
     transfer_table : array, ``(nnu, nk)``
     freqs, shape, pix_deg :
         As for :func:`gaussian_beam`.
+    width_scale : float
+        Stretch the beam by this factor in angle (1.02 is 2% wider), i.e.
+        evaluate ``B(width_scale * |k_perp|)``. For testing how wrong a
+        model beam can be.
     """
     nx, ny, nz = (int(n) for n in shape)
     freqs = np.asarray(freqs, dtype=float)
@@ -227,7 +231,7 @@ def tabulated_beam(k_table, nu_table, transfer_table, freqs, shape,
     px, py = np.broadcast_to(np.asarray(pix_deg, dtype=float), (2,))
     kx = 2 * np.pi * fft.fftfreq(nx, d=px)
     ky = 2 * np.pi * fft.rfftfreq(ny, d=py)
-    kperp = np.sqrt(kx[:, None] ** 2 + ky[None, :] ** 2)
+    kperp = width_scale * np.sqrt(kx[:, None] ** 2 + ky[None, :] ** 2)
     if kperp.max() > k_table[-1]:
         raise ValueError(f'beam table reaches k = {k_table[-1]:.2f} rad/deg, '
                          f'grid needs {kperp.max():.2f}')
@@ -240,11 +244,11 @@ def tabulated_beam(k_table, nu_table, transfer_table, freqs, shape,
     return Beam(transfer, shape)
 
 
-def load_beam_table(path, freqs, shape, pix_deg=PIX_DEG):
+def load_beam_table(path, freqs, shape, pix_deg=PIX_DEG, width_scale=1.0):
     """Build a :class:`Beam` from a table written by ``build_beam_table.py``."""
     with np.load(path) as t:
         return tabulated_beam(t['k'], t['freq_MHz'], t['transfer'], freqs,
-                              shape, pix_deg)
+                              shape, pix_deg, width_scale=width_scale)
 
 
 def beam_from_spec(spec, freqs, shape, pix_deg=PIX_DEG):
