@@ -214,12 +214,26 @@ python scripts/run_gibbs.py 6 --beam-fwhm 1.5 --beam-index 1
 ```
 
 convolves the signal and foreground, not the systematic, with a chromatic
-Gaussian beam, channel by channel (`imgibbs/beam.py`). `--beam-table` takes
-any tabulated `B(|k_perp|, nu)` instead (format: `imgibbs.load_beam_table`;
-`scripts/build_beam_table.py` makes one from a MeerKAT primary-beam model if
-you have access to one, and none is distributed here). `S` is then the power
-spectrum of the unconvolved sky. `beam=None` is the default and leaves the
-sampler unchanged.
+Gaussian beam, channel by channel (`imgibbs/beam.py`). `S` is then the power
+spectrum of the unconvolved sky. With no beam option the sampler is
+unchanged.
+
+**Choosing the beam.** No beam model is distributed here; for real data,
+use the measured beam for your band (see the warning below):
+
+| option | beam |
+|---|---|
+| *(none)* | no beam |
+| `--beam-fwhm DEG [--beam-index N] [--beam-nu-ref MHz]` | Gaussian, `FWHM(nu) = DEG (nu_ref/nu)^N` — for mocks made with the same Gaussian |
+| `--beam-table FILE` | a measured beam, in any of three layouts, detected automatically: |
+| | a radial table `B(\|k_perp\|, nu)` (`.npz`: `k`, `freq_MHz`, `transfer`) |
+| | a transfer already on this map's grid (`.npz`: `beam` of shape `(Nx, Ny, n_freq)`, optional `freqs`) — any point-symmetric beam, including elliptical ones |
+| | a pickle of azimuthally averaged power profiles (`freq`, `th`, `P_v_th`, `P_h_th`) |
+| `--beam-width-scale X` | with either of the above: stretch the beam by `X` in angle (tests only) |
+
+`scripts/build_beam_table.py` reduces a full Jones beam model (several GB)
+or a profile pickle to a radial table. `scripts/build_beam_grid.py`
+transforms a 2D Jones pattern onto the grid, keeping its ellipticity.
 
 Three things change with a beam, and all are on by default:
 
