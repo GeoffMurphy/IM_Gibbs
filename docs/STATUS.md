@@ -1285,6 +1285,53 @@ Read together:
 is `B Uf`; by (1) the two differ negligibly for a smooth beam, but a rippled
 measured beam would need the deflation done against `B Uf`.
 
+**6. How accurately the beam must be known — the width is forgiving, the
+spectral structure is not.** (2026-10-26.) Same beamed mock (made with the
+measured UHF table), fitted with a model beam that differs from it (`fit`
+arm of `submit_beam_injection.sh`, `TAG=_gauss` etc.; 1500 samples, burn-in
+300, zero-centred foreground prior):
+
+| model beam | bin 0 | 1 | 2 | 3 | 4 |
+|---|---|---|---|---|---|
+| exact (the table the mock was made with) | 0.99 ± 0.15 | 1.12 ± 0.08 | 0.88 ± 0.05 | *prior* | *prior* |
+| table, 2% wider (`--beam-width-scale 1.02`) | 0.98 ± 0.15 | 1.18 ± 0.09 | 0.91 ± 0.06 | *prior* | *prior* |
+| table, 2% narrower (0.98) | 1.09 ± 0.16 | 1.08 ± 0.08 | 0.86 ± 0.05 | *prior* | *prior* |
+| Gaussian matched to the table (1.472 deg at 997 MHz, index 0.657; FWHM within 0.07% across the band) | **114 ± 10** | **5.0 ± 0.3** | 0.99 ± 0.06 | *prior* | *prior* |
+| textbook Gaussian (1.55 deg = 1.22 lambda/D, index 1) | **147 ± 12** | **5.4 ± 0.4** | 1.06 ± 0.07 | *prior* | *prior* |
+| no beam in the model (from finding 4) | **15.0 ± 0.8** | 0.31 | 0.010 | 0.06 | 0.59 |
+
+(Ratio of the `S` chain to the true H I power; bins 3–4 are prior-dominated
+in every beamed arm, see finding 4. In the beam-passed modes of bin 0 the
+Gaussian arms' cross-power with the true H I is *negative*, -0.23 and -0.29:
+the recovered field there is foreground.)
+
+- **A 2% width error is harmless.** Bins 0–2 move by less than their error
+  bars. The 2% beams were chosen as a plausible FWHM error. So the
+  transverse shape of the main lobe does not need to be known better than
+  that.
+- **A Gaussian model is worse than no beam at all — 8–10x worse in bin 0.**
+  Matching the FWHM to 0.07% across the band does not help. The Gaussian
+  lacks the measured beam's spectral ripple, which is what leaks (finding
+  1). It also falls off far faster than the real beam outside the main
+  lobe, so to reproduce the data at those `k_perp` the model has to
+  deconvolve: `f` is inflated by `B_true / B_gauss`, and the ratio's
+  frequency structure is amplified with it. With no beam the ratio is just
+  `B_true`, which is at most 1. The damage sits in bins 0–1, the 17.4 MHz
+  ripple's `k_par`. Bin 2 is unaffected.
+- **Consequence for real data:** the beam model has to carry the true
+  beam's spectral structure. The Gaussian path in this repository is only
+  right for mocks made with the same Gaussian, and the README now says so.
+  For MeerKLASS L-band this sharpens the open question from finding 1: the
+  measured beam used here is the UHF one. Whether the UHF beam's ripple is a
+  good enough model for the L-band beam's is untested. Possible tests: shift
+  the model table in frequency against the mock (a ripple-phase error), or
+  fit an L-band holographic model if one is available.
+
+The new default (zero-centred foreground prior under a beam) passes the
+start-offset test of finding 4. The `S` x 0.1 and x 10 chains coalesce in
+bins 0–2 by samples 129–189, at 0.98 / 1.12 / 0.88, and stay apart in bins
+3–4 (final ratio 0.12, 0.05).
+
 **Related but separate work — check before extending this.** Geoff's
 observational run (`gibbs_beam`, out of `Sampling Nb/`) and the MSc student's
 beam (added on ilifu since 2026-09-13, see `~/handover/OPEN_ITEMS.md` item 7)
