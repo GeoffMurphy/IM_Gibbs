@@ -1,18 +1,23 @@
 #!/usr/bin/env python
 """Tabulate a primary-beam model as ``B(|k_perp|, nu)`` for ``--beam-table``.
 
-For anyone with access to a MeerKAT primary-beam model in the
-``.npz`` layout used by the MeerKAT beam releases: complex Jones voltage
-patterns ``beam`` of shape ``(4 pols, n_ant, n_freq, n, n)`` on a
-``margin_deg`` grid, with ``freq_MHz`` and ``antnames``. Such models are not
-distributed with this repository, and nothing here depends on one -- every
-script runs with a Gaussian beam by default. For every channel in the band:
+For anyone with access to a MeerKAT primary-beam model in one of two
+layouts. Such models are not distributed with this repository, and nothing
+here depends on one -- every script runs with a Gaussian beam by default.
 
-1. forms the Stokes-I power beam ``P = (|HH|^2 + |HV|^2 + |VH|^2 + |VV|^2)/2``;
-2. averages it azimuthally -- a scanned map averages over parallactic angle,
-   so the effective map beam is closer to the azimuthal average than to the
-   instantaneous, slightly elliptical pattern;
-3. Hankel-transforms the radial profile to a peak-normalised ``B(k)``.
+* **Jones ``.npz``** (the MeerKAT beam releases): complex voltage patterns
+  ``beam`` of shape ``(4 pols, n_ant, n_freq, n, n)`` on a ``margin_deg``
+  grid, with ``freq_MHz`` and ``antnames``. For every channel in the band it
+  forms the Stokes-I power beam ``P = (|HH|^2 + |HV|^2 + |VH|^2 + |VV|^2)/2``
+  and averages it azimuthally -- a scanned map averages over parallactic
+  angle, so the effective map beam is closer to the azimuthal average than
+  to the instantaneous, slightly elliptical pattern.
+* **1-D profile pickle**: a dict with ``freq`` (MHz), ``th`` (deg) and
+  azimuthally averaged power profiles ``P_v_th``, ``P_h_th`` of shape
+  ``(n_freq, n_th)``; the intensity beam is their mean.
+
+Either way the radial profile, cut at ``--rmax``, is Hankel-transformed to a
+peak-normalised ``B(k)``.
 
 The output (``k``, ``freq_MHz``, ``transfer``, plus profiles and FWHMs) is
 derived from the input model, so it is gitignored under ``data/`` and should
@@ -68,7 +73,8 @@ def open_beam(path):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
-    p.add_argument('npz', help='MeerKAT primary-beam .npz')
+    p.add_argument('npz', help='MeerKAT primary-beam model: Jones .npz or '
+                                 '1-D profile pickle')
     p.add_argument('--out', default=str(data_path('beam_table.npz')))
     p.add_argument('--fmin', type=float, default=960.0,
                    help='lowest frequency to tabulate, MHz (default 960)')
@@ -80,7 +86,14 @@ def main():
                    help='largest k tabulated, rad/deg (default 25; the '
                         '0.3 deg grid needs 14.8)')
     p.add_argument('--nk', type=int, default=1001)
+    p.add_argument('--rmax', type=float, default=6.0,
+                   help='cut the radial profile here, deg (default 6, the '
+                        'Jones grid edge). Power further out is pickup from '
+                        'outside the field, not a transfer on in-map '
+                        'structure.')
     args = p.parse_args()
+    if not zipfile.is_zipfile(args.npz):
+        return main_profiles(args)
 
     meta = np.load(args.npz)
     freq = meta['freq_MHz']
@@ -99,7 +112,7 @@ def main():
     dr = margin[1] - margin[0]
     X, Y = np.meshgrid(margin, margin, indexing='ij')
     R = np.hypot(X, Y).ravel()
-    r_max = min(-margin[0], margin[-1])
+    r_max = min(-margin[0], margin[-1], args.rmax)
     edges = np.arange(0.0, r_max + dr / 2, dr)
     idx = np.digitize(R, edges) - 1
     keep = (idx >= 0) & (idx < len(edges) - 1)
@@ -127,6 +140,41 @@ def main():
     print(f'FWHM {fw[0]:.4f} deg at {freq[chans[0]]:.2f} MHz -> {fw[-1]:.4f} '
           f'deg at {freq[chans[-1]]:.2f} MHz; '
           f'effective index {np.log(fw[0] / fw[-1]) / np.log(freq[chans[-1]] / freq[chans[0]]):.3f}')
+    print(f'wrote {args.out}')
+
+
+def main_profiles(args):
+    """The 1-D profile-pickle layout (see the module docstring)."""
+    import pickle
+    with open(args.npz, 'rb') as fh:
+        d = pickle.load(fh, encoding='latin1')
+    freq = np.asarray(d['freq'], dtype=float)
+    th = np.asarray(d['th'], dtype=float)
+    prof = 0.5 * (np.asarray(d['P_v_th']) + np.asarray(d['P_h_th']))
+    # Keep one tabulated channel either side of the band, so interpolation
+    # onto the map's channels never extrapolates.
+    lo = max(np.searchsorted(freq, args.fmin, side='right') - 1, 0)
+    hi = min(np.searchsorted(freq, args.fmax, side='left') + 1, len(freq))
+    chans = np.arange(lo, hi)
+    keep = th <= args.rmax
+    r = th[keep]
+    profiles = prof[chans][:, keep]
+    profiles = profiles / profiles[:, :1]
+    print(f'{Path(args.npz).name}: {len(freq)} profiles, {len(th)} radii to '
+          f'{th[-1]:g} deg; {len(chans)} channels {freq[chans[0]]:.2f}-'
+          f'{freq[chans[-1]]:.2f} MHz, cut at {r[-1]:g} deg')
+    fwhm = np.array([2 * np.interp(0.5, pr[:np.argmax(pr < 0.3)][::-1],
+                                   r[:np.argmax(pr < 0.3)][::-1])
+                     for pr in profiles])
+    k = np.linspace(0.0, args.kmax, args.nk)
+    transfer = radial_transfer(r, profiles, k)
+    np.savez(args.out, k=k, freq_MHz=freq[chans], transfer=transfer,
+             r_deg=r, profile=profiles, fwhm_deg=fwhm,
+             source=str(Path(args.npz).name), antenna='azimuthal profile')
+    fc = freq[chans]
+    print(f'FWHM {fwhm[0]:.4f} deg at {fc[0]:.2f} MHz -> {fwhm[-1]:.4f} '
+          f'deg at {fc[-1]:.2f} MHz; '
+          f'effective index {np.log(fwhm[0] / fwhm[-1]) / np.log(fc[-1] / fc[0]):.3f}')
     print(f'wrote {args.out}')
 
 
