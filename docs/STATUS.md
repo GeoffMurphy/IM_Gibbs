@@ -1333,6 +1333,47 @@ start-offset test of finding 4. The `S` x 0.1 and x 10 chains coalesce in
 bins 0–2 by samples 129–189, at 0.98 / 1.12 / 0.88, and stay apart in bins
 3–4 (final ratio 0.12, 0.05).
 
+**7. L-band: the L-band beam works, the UHF stand-in does not.**
+(2026-10-27.) The L-band beam model on Ilifu is a set of azimuthally averaged
+power profiles (2 MHz spacing, 0.1 deg radial steps). `build_beam_table.py`
+now reads that layout. Over 960–1036 MHz its FWHM goes 1.556 -> 1.416 deg,
+chromatic index **1.23** against the UHF beam's 0.63. Its ripple leaks
+almost as much: **0.35 mK outside 6 modes, also at 17.4 MHz** (UHF 0.39 mK;
+n=3 / 10: 0.39 / 0.05 mK against 0.43 / 0.12). The UHF numbers reproduce
+finding 1 exactly. So the 17.4 MHz ripple is a property of the dish, not of
+one band's model.
+
+New mock made with the L-band beam (otherwise identical to finding 4's),
+1500 samples, burn-in 300:
+
+| model beam | bin 0 | 1 | 2 | 3 | 4 |
+|---|---|---|---|---|---|
+| L-band (exact) | 0.97 ± 0.14 | 1.12 ± 0.08 | 0.88 ± 0.05 | *prior* | *prior* |
+| UHF (the stand-in used so far) | **3.9 ± 0.5** | **3.4 ± 0.2** | 0.88 ± 0.05 | *prior* | *prior* |
+| none | **12.9 ± 0.7** | 0.13 | 0.009 | 0.06 | 0.59 |
+
+Cross-power with the true H I in the beam-passed modes (`|B|^2 >= 0.5`),
+L-band model: 0.27 / 0.50 / 0.43 in bins 0–2, the same as the UHF mock
+fitted with the UHF model (finding 4).
+
+- **With the right beam, L-band behaves exactly like UHF.** Bins 0–2 agree
+  with the UHF-on-UHF run to within 0.03.
+- **The UHF beam is not an adequate stand-in for L-band data.** It
+  overestimates bins 0 and 1 by 4x and 3.4x. That is better than no beam in
+  bin 0 (13x) but worse in bin 1, where no beam *loses* signal (0.13).
+  Bin 2 is unaffected in both cases. Every UHF-on-L-band caveat above
+  therefore resolves to: **use the L-band beam.**
+- **What this says about required beam accuracy.** A uniform 2% width error
+  is harmless (finding 6); the UHF-to-L-band difference is not. The two
+  beams' FWHMs differ by at most 2.5% (at the low end of the band, 0.6% at
+  the top), but the difference changes with frequency and their ripples
+  need not be in phase. So the model has to get the beam's *frequency*
+  dependence right, not just its size. The L-band model itself is an
+  approximation (2 MHz spacing, one azimuthal average for all dishes, no
+  parallactic rotation). How much error of that kind is tolerable is the
+  remaining real-data question; these runs bound it between "harmless" and
+  "4x".
+
 **Related but separate work — check before extending this.** Geoff's
 observational run (`gibbs_beam`, out of `Sampling Nb/`) and the MSc student's
 beam (added on ilifu since 2026-09-13, see `~/handover/OPEN_ITEMS.md` item 7)

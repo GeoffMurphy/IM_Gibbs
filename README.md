@@ -245,7 +245,9 @@ measured FWHM and chromatic index, put 114x the true power into the lowest
 k-bin and 5x into the next. Leaving the beam out entirely gave 15x. The
 Gaussian examples here are for mocks made with the same Gaussian. On real
 data the model needs the beam's spectral structure, from a measured
-`--beam-table`; getting its width 2% wrong did no measurable harm. `scripts/beam_injection.py` and
+`--beam-table` for the right band. Getting its width 2% wrong did no
+measurable harm, but a measured beam from the wrong band (UHF on an L-band
+mock) still gave 4x in the lowest bin. `scripts/beam_injection.py` and
 `submit_beam_injection.sh` run the known-answer test. **Caveat:** the shipped
 `S_starting_point` is the power of the same simulated HI the mocks inject, so
 chains start at the answer; start with `--S-start-scale` (e.g. 0.1 and 10)
