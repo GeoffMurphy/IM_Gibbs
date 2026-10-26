@@ -1312,9 +1312,10 @@ the recovered field there is foreground.)
 - **A Gaussian model is worse than no beam at all — 8–10x worse in bin 0.**
   Matching the FWHM to 0.07% across the band does not help. The Gaussian
   lacks the measured beam's spectral ripple, which is what leaks (finding
-  1). It also falls off far faster than the real beam outside the main
-  lobe, so to reproduce the data at those `k_perp` the model has to
-  deconvolve: `f` is inflated by `B_true / B_gauss`, and the ratio's
+  1). The likely reason it is worse than nothing (not yet checked
+  directly, e.g. by comparing `f` between arms): the Gaussian falls off far
+  faster than the real beam outside the main lobe, so to reproduce the data
+  at those `k_perp` the model has to deconvolve: `f` is inflated by `B_true / B_gauss`, and the ratio's
   frequency structure is amplified with it. With no beam the ratio is just
   `B_true`, which is at most 1. The damage sits in bins 0–1, the 17.4 MHz
   ripple's `k_par`. Bin 2 is unaffected.
