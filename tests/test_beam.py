@@ -434,6 +434,53 @@ def test_width_scale_stretches_a_tabulated_beam():
     assert not np.allclose(tab.transfer, chromatic().transfer, atol=1e-3)
 
 
+def test_load_beam_table_reads_a_grid_beam(tmp_path):
+    """A transfer saved on the map's own full grid loads back exactly, and
+    planes at other frequencies are interpolated linearly."""
+    from imgibbs import load_beam_table
+    ref = chromatic()
+    path = tmp_path / 'grid.npz'
+    np.savez(path, beam=ref.full_transfer(), freqs=FREQS)
+    assert np.array_equal(load_beam_table(path, FREQS, SHAPE).transfer,
+                          ref.transfer)
+    # Every other plane, with the last kept so the band is covered.
+    keep = np.r_[np.arange(0, len(FREQS) - 1, 2), len(FREQS) - 1]
+    np.savez(path, beam=ref.full_transfer()[:, :, keep], freqs=FREQS[keep])
+    beam = load_beam_table(path, FREQS, SHAPE)
+    assert np.allclose(beam.transfer[:, :, keep], ref.transfer[:, :, keep])
+    mid = 1
+    lin = 0.5 * (ref.transfer[:, :, 0] + ref.transfer[:, :, 2])
+    assert np.allclose(beam.transfer[:, :, mid], lin)
+    with pytest.raises(ValueError):
+        load_beam_table(path, FREQS, SHAPE, width_scale=1.02)
+
+
+def test_load_beam_table_reads_azimuthal_profiles(tmp_path):
+    """A pickle of Gaussian power profiles gives back the Gaussian beam."""
+    import pickle
+    from imgibbs import load_beam_table
+    fr = np.linspace(FREQS[0] - 2, FREQS[-1] + 2, 40)
+    th = np.arange(0, 6.0001, 0.005)
+    sig = beam_fwhm(fr, 0.6, FREQS[0], 1.0) / FWHM_TO_SIGMA
+    P = np.exp(-0.5 * th[None] ** 2 / sig[:, None] ** 2)
+    path = tmp_path / 'profiles.pkl'
+    with open(path, 'wb') as fh:
+        pickle.dump(dict(freq=fr, th=th, P_v_th=P, P_h_th=P), fh)
+    beam = load_beam_table(path, FREQS, SHAPE, pix_deg=PIX)
+    assert np.allclose(beam.transfer, chromatic().transfer, atol=2e-3)
+    assert 'azimuthal profiles' in beam.source
+
+
+def test_load_beam_table_refuses_a_jones_model(tmp_path):
+    """A full Jones model (GBs) must go through build_beam_table.py."""
+    from imgibbs import load_beam_table
+    path = tmp_path / 'jones.npz'
+    np.savez(path, beam=np.zeros((4, 1, 2, 3, 3), complex),
+             margin_deg=np.zeros(3), freq_MHz=np.zeros(2))
+    with pytest.raises(ValueError, match='Jones'):
+        load_beam_table(path, FREQS, SHAPE)
+
+
 def test_tabulated_beam_refuses_to_extrapolate():
     from imgibbs import tabulated_beam
     k = np.linspace(0, 20, 10)

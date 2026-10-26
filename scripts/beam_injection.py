@@ -89,20 +89,40 @@ def build(args):
     noise = rng.normal(scale=np.sqrt(T_SYS ** 2 / (DEL_NU * DEL_T)),
                        size=shape)
 
+    # Ground spill (optional) enters after the beam: it is far-sidelobe
+    # pickup, not sky, so the model's g block sits outside B as well.
+    if args.groundspill > 0:
+        from imgibbs.systematics import groundspill_cube
+        spill, gs = groundspill_cube(freqs_for(CROP), shape,
+                                     ripple_rms=args.groundspill,
+                                     spill_level=args.spill_level,
+                                     period=args.gs_period,
+                                     gradient=args.gs_gradient, rng=rng)
+    else:
+        spill, gs = np.zeros(shape), None
+
     os.makedirs(args.out, exist_ok=True)
-    beamed = (beam.apply(hi + fg) + noise) * flag
-    control = (hi + fg + noise) * flag
+    beamed = (beam.apply(hi + fg) + spill + noise) * flag
+    control = (hi + fg + spill + noise) * flag
     # A flagged voxel is one that is exactly zero; make sure no real one is.
     for cube in (beamed, control):
         cube[(flag > 0) & (cube == 0)] = 1e-12
     np.save(os.path.join(args.out, 'mock_beamed.npy'), beamed)
     np.save(os.path.join(args.out, 'mock_control.npy'), control)
     np.save(os.path.join(args.out, 'truth_hi.npy'), hi)
+    if gs is not None:
+        np.save(os.path.join(args.out, 'truth_g.npy'), gs['g_true'])
     Path(args.out, 'beam_args.txt').write_text(' '.join(beam_run_args(spec))
                                                + '\n')
     meta = dict(beam=spec, truth_seed=TRUTH_SEED,
                 n_modes_fg=N_MODES, hi_rms_K=float(hi.std()),
                 fg_rms_K=float(fg[flag > 0].std()),
+                groundspill=(None if gs is None else dict(
+                    ripple_rms_K=args.groundspill,
+                    spill_level_K=args.spill_level, period_MHz=args.gs_period,
+                    gradient=args.gs_gradient,
+                    run_gibbs_args=['--groundspill', '--gs-period',
+                                    repr(args.gs_period)])),
                 noise_rms_K=float(noise.std()))
     Path(args.out, 'mock_meta.json').write_text(json.dumps(meta, indent=2))
     print(json.dumps(meta, indent=2))
@@ -148,11 +168,26 @@ def summarise(args):
         post = pk[args.burn:]
         mv = os.path.join(arm_dir, f'matvecs{sfx}.npy')
         mv = np.median(np.load(mv)) if os.path.exists(mv) else np.nan
-        rows[arm] = (post.mean(0), post.std(0), pk, mv)
+        # Ground-spill recovery, where it was injected and modelled: the
+        # posterior-mean g projected on the truth, as a fraction of it.
+        g_rec = None
+        g_file = os.path.join(args.out, 'truth_g.npy')
+        g_traces = glob.glob(os.path.join(arm_dir, 'samples',
+                                          f'g_trace*{sfx}.npy'))
+        if os.path.exists(g_file) and len(g_traces) > args.burn:
+            g_true = np.load(g_file).ravel()
+            g_traces.sort(key=lambda p: int(Path(p).name[7:].split('_')[0]))
+            g = np.array([np.load(f).ravel() for f in g_traces[args.burn:]])
+            amp = g @ g_true / (g_true @ g_true)
+            g_rec = (amp.mean(), amp.std())
+        rows[arm] = (post.mean(0), post.std(0), pk, mv, g_rec)
         np.save(os.path.join(arm_dir, 'Pk_chain.npy'), pk)
 
-    for arm, (mean, std, pk, mv) in rows.items():
-        print(f'{arm}: {len(pk)} samples, median {mv:.0f} matvecs/solve')
+    for arm, (mean, std, pk, mv, g_rec) in rows.items():
+        print(f'{arm}: {len(pk)} samples, median {mv:.0f} matvecs/solve'
+              + ('' if g_rec is None else
+                 f'; ground spill recovered at {g_rec[0]:.3f}+-{g_rec[1]:.3f}'
+                 f' of the injected amplitude'))
         print('   ratio to truth (all modes):     '
               + '  '.join(f'{m / t:6.3f}+-{s / t:.3f}'
                           for m, s, t in zip(mean, std, p_all)))
@@ -172,7 +207,8 @@ def main():
     sub = p.add_subparsers(dest='cmd', required=True)
     b = sub.add_parser('build')
     b.add_argument('--beam-table', default=None,
-                   help='tabulated beam (imgibbs.load_beam_table format); '
+                   help='measured beam, any imgibbs.load_beam_table layout '
+                        '(radial table, grid transfer, profile pickle); '
                         'overrides the Gaussian')
     b.add_argument('--beam-fwhm', type=float, default=1.5,
                    help='Gaussian FWHM in degrees at --beam-nu-ref '
@@ -181,6 +217,17 @@ def main():
                    help='reference frequency, MHz (default: band centre)')
     b.add_argument('--beam-index', type=float, default=1.0,
                    help='chromatic index (default 1)')
+    b.add_argument('--groundspill', type=float, default=0.0,
+                   help='also inject a ground-spill ripple of this rms, K, '
+                        'outside the beam (default 0: none). Model it with '
+                        'run_gibbs.py --groundspill.')
+    b.add_argument('--spill-level', type=float, default=0.5,
+                   help='rms of the smooth spill component, K (default 0.5)')
+    b.add_argument('--gs-period', type=float, default=17.5,
+                   help='ripple period, MHz (default 17.5)')
+    b.add_argument('--gs-gradient', type=float, default=0.3,
+                   help='scan-direction gradient relative to the constant '
+                        '(default 0.3)')
     b.add_argument('--out', default='outputs/beam_injection')
     s = sub.add_parser('summarise')
     s.add_argument('out', nargs='?', default='outputs/beam_injection')

@@ -163,9 +163,12 @@ def parse_args():
         'primary beam, FWHM(nu) = fwhm * (nu_ref/nu)^index. Off unless '
         '--beam-fwhm is given. The systematic block stays outside the beam.')
     bm.add_argument('--beam-table', default=None,
-                    help='tabulated beam, imgibbs.load_beam_table format '
-                         '(k, freq_MHz, transfer). Takes precedence over '
-                         '--beam-fwhm.')
+                    help='a measured beam: a radial table from '
+                         'build_beam_table.py, a transfer already on this '
+                         "map's grid (.npz with 'beam' (Nx, Ny, n_freq)), or "
+                         'a pickle of azimuthal power profiles -- detected '
+                         'automatically (imgibbs.load_beam_table). Takes '
+                         'precedence over --beam-fwhm.')
     bm.add_argument('--beam-width-scale', type=float, default=1.0,
                     help='stretch the model beam by this factor in angle '
                          '(default 1; 1.02 is 2%% wider), for --beam-table '
@@ -343,13 +346,8 @@ def main():
     if args.beam_table is not None:
         beam = load_beam_table(args.beam_table, grid.freqs, shape,
                                width_scale=args.beam_width_scale)
-        with np.load(args.beam_table) as tab:
-            fw = args.beam_width_scale * np.interp(
-                grid.freqs[[0, -1]], tab['freq_MHz'], tab['fwhm_deg'])
-            src = str(tab['source'])
-        print(f'beam         : tabulated ({src}), FWHM {fw[0]:.3f} deg at '
-              f'{grid.freqs[0]:.1f} MHz -> {fw[1]:.3f} deg at '
-              f'{grid.freqs[-1]:.1f} MHz')
+        print(f'beam         : {beam.source} '
+              f'({grid.freqs[0]:.1f}-{grid.freqs[-1]:.1f} MHz)')
     elif args.beam_fwhm is not None:
         nu_ref = (args.beam_nu_ref if args.beam_nu_ref is not None
                   else float(grid.freqs.mean()))

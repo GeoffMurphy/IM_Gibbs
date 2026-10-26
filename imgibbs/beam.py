@@ -244,11 +244,133 @@ def tabulated_beam(k_table, nu_table, transfer_table, freqs, shape,
     return Beam(transfer, shape)
 
 
+def grid_beam(transfer, file_freqs, freqs, shape):
+    """A beam already tabulated on the map's own transverse grid.
+
+    ``transfer`` is ``B(kx, ky, nu)`` on the full ``(Nx, Ny)`` ``fftfreq``
+    grid, one plane per tabulated frequency -- e.g. a 2D (non-circular)
+    beam pattern transformed by ``scripts/build_beam_grid.py``. It must be
+    real and even in ``k_perp`` (a point-symmetric power pattern). Planes are
+    interpolated linearly in frequency onto ``freqs`` unless they already
+    match.
+    """
+    nx, ny, nz = (int(n) for n in shape)
+    full = np.asarray(transfer, dtype=float)
+    freqs = np.asarray(freqs, dtype=float)
+    if full.ndim != 3 or full.shape[:2] != (nx, ny):
+        raise ValueError(f'grid beam has shape {full.shape}, map needs '
+                         f'({nx}, {ny}, n_freq)')
+    if file_freqs is None:
+        if full.shape[2] != nz:
+            raise ValueError(f'grid beam has {full.shape[2]} planes and no '
+                             f'frequencies; map has {nz} channels')
+    else:
+        file_freqs = np.asarray(file_freqs, dtype=float)
+        if not (file_freqs.shape == freqs.shape
+                and np.allclose(file_freqs, freqs, atol=1e-6)):
+            if freqs.min() < file_freqs[0] or freqs.max() > file_freqs[-1]:
+                raise ValueError(f'grid beam covers {file_freqs[0]:.2f}-'
+                                 f'{file_freqs[-1]:.2f} MHz, map needs '
+                                 f'{freqs.min():.2f}-{freqs.max():.2f}')
+            idx = np.clip(np.searchsorted(file_freqs, freqs) - 1, 0,
+                          len(file_freqs) - 2)
+            a = ((freqs - file_freqs[idx])
+                 / (file_freqs[idx + 1] - file_freqs[idx]))
+            full = full[:, :, idx] * (1 - a) + full[:, :, idx + 1] * a
+    return Beam(full[:, :ny // 2 + 1], shape)
+
+
+def read_beam_profiles(path, rmax=6.0):
+    """Azimuthally averaged power profiles from a pickle.
+
+    The layout is a dict with ``freq`` (MHz), ``th`` (deg) and power
+    profiles ``P_v_th``, ``P_h_th`` of shape ``(n_freq, n_th)``; the
+    intensity beam is their mean. Returns ``freq, r_deg, profiles`` with
+    each profile peak-normalised and cut at ``rmax`` degrees -- power further
+    out is pickup from outside the field, not a transfer on in-map
+    structure.
+    """
+    import pickle
+    with open(path, 'rb') as fh:
+        d = pickle.load(fh, encoding='latin1')
+    freq = np.asarray(d['freq'], dtype=float).ravel()
+    th = np.asarray(d['th'], dtype=float).ravel()
+    prof = 0.5 * (np.asarray(d['P_v_th']) + np.asarray(d['P_h_th']))
+    keep = th <= rmax
+    prof = prof[:, keep]
+    return freq, th[keep], prof / prof[:, :1]
+
+
+def _profile_fwhm(r, profile):
+    """FWHM in degrees of a peak-normalised radial profile."""
+    cut = np.argmax(profile < 0.3)
+    return 2 * float(np.interp(0.5, profile[:cut][::-1], r[:cut][::-1]))
+
+
 def load_beam_table(path, freqs, shape, pix_deg=PIX_DEG, width_scale=1.0):
-    """Build a :class:`Beam` from a table written by ``build_beam_table.py``."""
-    with np.load(path) as t:
-        return tabulated_beam(t['k'], t['freq_MHz'], t['transfer'], freqs,
+    """Build a :class:`Beam` from a beam file, whichever of three layouts:
+
+    * a **radial table** ``.npz`` (``k``, ``freq_MHz``, ``transfer``), as
+      written by ``scripts/build_beam_table.py`` -- a circular beam;
+    * a **full-grid** ``.npz`` (``beam`` of shape ``(Nx, Ny, n_freq)``,
+      optionally ``freqs`` or ``freq_MHz``), the transfer already on this
+      map's grid -- any point-symmetric beam (see :func:`grid_beam`);
+    * a **profile pickle** of azimuthally averaged power profiles (see
+      :func:`read_beam_profiles`), Hankel-transformed here.
+
+    A full Jones beam model is not read here -- it can be several GB --
+    reduce it with ``scripts/build_beam_table.py`` first. The returned beam
+    has a ``source`` attribute describing what was loaded.
+    """
+    import zipfile
+    from pathlib import Path
+    name = Path(path).name
+    freqs = np.asarray(freqs, dtype=float)
+    if zipfile.is_zipfile(path):
+        with np.load(path) as t:
+            files = set(t.files)
+            if {'k', 'freq_MHz', 'transfer'} <= files:
+                beam = tabulated_beam(t['k'], t['freq_MHz'], t['transfer'],
+                                      freqs, shape, pix_deg,
+                                      width_scale=width_scale)
+                src = str(t['source']) if 'source' in files else name
+                desc = f'radial table ({src})'
+                if 'fwhm_deg' in files:
+                    fw = width_scale * np.interp(freqs[[0, -1]],
+                                                 t['freq_MHz'], t['fwhm_deg'])
+                    desc += f', FWHM {fw[0]:.3f} -> {fw[1]:.3f} deg'
+            elif 'margin_deg' in files or 'antnames' in files:
+                raise ValueError(f'{name} is a full Jones beam model; reduce '
+                                 f'it with scripts/build_beam_table.py first')
+            elif 'beam' in files:
+                if width_scale != 1.0:
+                    raise ValueError('--beam-width-scale needs a radial '
+                                     'table or profiles, not a grid beam')
+                ff = next((t[k] for k in ('freqs', 'freq_MHz') if k in files),
+                          None)
+                beam = grid_beam(t['beam'], ff, freqs, shape)
+                desc = f'grid transfer ({name})'
+            else:
+                raise ValueError(f'{name}: not a beam table, grid beam or '
+                                 f'profile pickle (keys {sorted(files)})')
+    else:
+        fr, r, prof = read_beam_profiles(path)
+        lo = max(np.searchsorted(fr, freqs.min(), side='right') - 1, 0)
+        hi = min(np.searchsorted(fr, freqs.max(), side='left') + 1, len(fr))
+        fr, prof = fr[lo:hi], prof[lo:hi]
+        px, py = np.broadcast_to(np.asarray(pix_deg, dtype=float), (2,))
+        kmax = width_scale * 2 * np.pi * np.hypot(0.5 / px, 0.5 / py)
+        k = np.linspace(0.0, 1.05 * kmax, 1001)
+        beam = tabulated_beam(k, fr, radial_transfer(r, prof, k), freqs,
                               shape, pix_deg, width_scale=width_scale)
+        fw = width_scale * np.interp(freqs[[0, -1]], fr,
+                                     [_profile_fwhm(r, q) for q in prof])
+        desc = (f'azimuthal profiles ({name}), FWHM {fw[0]:.3f} -> '
+                f'{fw[1]:.3f} deg')
+    if width_scale != 1.0:
+        desc += f', width x {width_scale:g}'
+    beam.source = desc
+    return beam
 
 
 def beam_from_spec(spec, freqs, shape, pix_deg=PIX_DEG):

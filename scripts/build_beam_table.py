@@ -44,7 +44,8 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from imgibbs import data_path, radial_transfer                 # noqa: E402
+from imgibbs import data_path, radial_transfer, read_beam_profiles  # noqa: E402
+from imgibbs.beam import _profile_fwhm                         # noqa: E402
 
 
 def open_beam(path):
@@ -145,33 +146,20 @@ def main():
 
 def main_profiles(args):
     """The 1-D profile-pickle layout (see the module docstring)."""
-    import pickle
-    with open(args.npz, 'rb') as fh:
-        d = pickle.load(fh, encoding='latin1')
-    freq = np.asarray(d['freq'], dtype=float)
-    th = np.asarray(d['th'], dtype=float)
-    prof = 0.5 * (np.asarray(d['P_v_th']) + np.asarray(d['P_h_th']))
+    freq, r, profiles = read_beam_profiles(args.npz, rmax=args.rmax)
     # Keep one tabulated channel either side of the band, so interpolation
     # onto the map's channels never extrapolates.
     lo = max(np.searchsorted(freq, args.fmin, side='right') - 1, 0)
     hi = min(np.searchsorted(freq, args.fmax, side='left') + 1, len(freq))
-    chans = np.arange(lo, hi)
-    keep = th <= args.rmax
-    r = th[keep]
-    profiles = prof[chans][:, keep]
-    profiles = profiles / profiles[:, :1]
-    print(f'{Path(args.npz).name}: {len(freq)} profiles, {len(th)} radii to '
-          f'{th[-1]:g} deg; {len(chans)} channels {freq[chans[0]]:.2f}-'
-          f'{freq[chans[-1]]:.2f} MHz, cut at {r[-1]:g} deg')
-    fwhm = np.array([2 * np.interp(0.5, pr[:np.argmax(pr < 0.3)][::-1],
-                                   r[:np.argmax(pr < 0.3)][::-1])
-                     for pr in profiles])
+    fc, profiles = freq[lo:hi], profiles[lo:hi]
+    print(f'{Path(args.npz).name}: {len(freq)} profiles; {len(fc)} channels '
+          f'{fc[0]:.2f}-{fc[-1]:.2f} MHz, cut at {r[-1]:g} deg')
+    fwhm = np.array([_profile_fwhm(r, pr) for pr in profiles])
     k = np.linspace(0.0, args.kmax, args.nk)
     transfer = radial_transfer(r, profiles, k)
-    np.savez(args.out, k=k, freq_MHz=freq[chans], transfer=transfer,
-             r_deg=r, profile=profiles, fwhm_deg=fwhm,
+    np.savez(args.out, k=k, freq_MHz=fc, transfer=transfer, r_deg=r,
+             profile=profiles, fwhm_deg=fwhm,
              source=str(Path(args.npz).name), antenna='azimuthal profile')
-    fc = freq[chans]
     print(f'FWHM {fwhm[0]:.4f} deg at {fc[0]:.2f} MHz -> {fwhm[-1]:.4f} '
           f'deg at {fc[-1]:.2f} MHz; '
           f'effective index {np.log(fwhm[0] / fwhm[-1]) / np.log(fc[-1] / fc[0]):.3f}')
