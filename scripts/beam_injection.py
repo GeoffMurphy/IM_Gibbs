@@ -180,7 +180,11 @@ def summarise(args):
                 and not c.get('gs_deflate')):
             g_true = np.load(g_file).ravel()
             g_traces.sort(key=lambda p: int(Path(p).name[7:].split('_')[0]))
-            g = np.array([np.load(f).ravel() for f in g_traces[args.burn:]])
+            g = np.array([np.load(f) for f in g_traces[args.burn:]])
+            if c.get('gs_smooth'):
+                # Spectral row 0 is the smooth template; g_true is the ripple.
+                g = g.reshape(len(g), -1, c['gs_harmonics'] * 2 + 1)[:, :, 1:]
+            g = g.reshape(len(g), -1)
             amp = g @ g_true / (g_true @ g_true)
             g_rec = (amp.mean(), amp.std())
         rows[arm] = (post.mean(0), post.std(0), pk, mv, g_rec)

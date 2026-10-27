@@ -133,9 +133,11 @@ def parse_args():
                    help='do not downweight flagged (zero) voxels')
     g = p.add_argument_group(
         'ground spill',
-        'Add a systematic block for a standing-wave ripple. The SMOOTH part '
-        'of ground spill is not modelled and does not need to be -- the '
-        'foreground block absorbs it completely (see imgibbs/systematics.py).')
+        'Add a systematic block for a standing-wave ripple. Without a beam '
+        'the SMOOTH part of ground spill does not need modelling -- the '
+        'foreground block absorbs it completely (see imgibbs/systematics.py). '
+        'With a beam it does: spill is not beamed, the foreground model is '
+        '(see --gs-smooth).')
     g.add_argument('--groundspill', action='store_true',
                    help='sample a ground-spill systematic jointly with s and f')
     g.add_argument('--gs-period', type=float, default=17.5,
@@ -156,9 +158,23 @@ def parse_args():
                         'degenerate with f and only confuses the split; '
                         'deflating took the beamless injection test from 15x '
                         'to the control in the lowest bin (docs/STATUS.md). '
-                        'With a beam it stays close to exact for these '
-                        'templates: they are smooth across the sky, where '
-                        'B is ~1.')
+                        'With a beam it made no difference (finding 9 of '
+                        "'The beam in the MODEL'), and it cannot be combined "
+                        'with --gs-smooth.')
+    g.add_argument('--gs-smooth', choices=('auto', 'on', 'off'),
+                   default='auto',
+                   help='add an unbeamed smooth template (the ripple envelope) '
+                        'per spatial term, for the smooth spill. auto (the '
+                        'default): on when a beam is modelled. The spill '
+                        'enters after the beam, so B Uf f cannot fit it; '
+                        'leaving it out put 22x the H I power into the lowest '
+                        'bin of the beamed injection test (docs/STATUS.md, '
+                        "finding 9 of 'The beam in the MODEL'). Without a "
+                        'beam it is degenerate with the foreground block.')
+    g.add_argument('--gs-smooth-prior', type=float, default=10.0,
+                   help='prior std on each smooth-spill amplitude, K '
+                        '(default: 10). Spill is ~0.5 K, far above the '
+                        'ripple, so it needs its own, much wider prior.')
     g.add_argument('--gs-prior', type=float, default=1e-2,
                    help='prior std on each ground-spill amplitude, K '
                         '(default: 1e-2). This is a PRIOR, not a sampled '
@@ -323,12 +339,22 @@ def main():
     # Systematics: ground spill
     # ------------------------------------------------------------------
     if args.groundspill:
+        beamed = args.beam_table is not None or args.beam_fwhm is not None
+        gs_smooth = (args.gs_smooth == 'on'
+                     or (args.gs_smooth == 'auto' and beamed))
+        if gs_smooth and args.gs_deflate:
+            raise SystemExit('--gs-deflate would project the smooth template '
+                             'out entirely; use one or the other '
+                             '(--gs-smooth off to deflate)')
         sys_basis = groundspill_basis(
             grid.freqs, shape, period=args.gs_period,
             n_harmonics=args.gs_harmonics, order=args.gs_order,
-            scan_axis=args.gs_scan_axis,
+            scan_axis=args.gs_scan_axis, include_smooth=gs_smooth,
             fg_basis=evecs if args.gs_deflate else None)
-        G = np.full(sys_basis.n_params, args.gs_prior ** 2)
+        G = np.full(sys_basis.g_shape, args.gs_prior ** 2)
+        if gs_smooth:
+            G[:, 0] = args.gs_smooth_prior ** 2     # spectral row 0 is smooth
+        G = G.ravel()
         g_mean = np.zeros(sys_basis.g_shape)
         bandwidth = grid.freqs[-1] - grid.freqs[0]
         # A ripple is a single k_parallel mode: all of its power goes into one
@@ -339,7 +365,8 @@ def main():
                     for m in range(1, args.gs_harmonics + 1)]
         print(f'groundspill  : {sys_basis.n_params} params '
               f'({sys_basis.n_s} spatial x {sys_basis.n_t} spectral), '
-              f'prior std {args.gs_prior:g} K')
+              f'prior std {args.gs_prior:g} K'
+              + (f', smooth {args.gs_smooth_prior:g} K' if gs_smooth else ''))
         print(f'               period {args.gs_period:g} MHz -> k_par '
               + ', '.join(f'{k:.4f}' for k in k_ripple) + ' Mpc^-1')
         for k in k_ripple:
@@ -348,6 +375,7 @@ def main():
                   f'(k = {sig_k[bin_i]:.4f})')
     else:
         sys_basis = G = g_mean = None
+        gs_smooth = False
 
     # ------------------------------------------------------------------
     # Beam
@@ -478,6 +506,10 @@ def main():
                    'gs_scan_axis': args.gs_scan_axis if args.groundspill else None,
                    'gs_prior_K': args.gs_prior if args.groundspill else None,
                    'gs_deflate': bool(args.groundspill and args.gs_deflate),
+                   'gs_smooth': bool(args.groundspill and gs_smooth),
+                   'gs_smooth_prior_K': (args.gs_smooth_prior
+                                         if args.groundspill and gs_smooth
+                                         else None),
                    'data': args.data,
                    'beam_table': args.beam_table,
                    'beam_collapse': (beam is not None

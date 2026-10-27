@@ -170,6 +170,12 @@ using it.
 foreground block has per-pixel free amplitudes on `n_modes` smooth frequency
 modes, so a smooth spillover envelope lies inside its span to machine precision
 at any `n_modes`. Inject 0.5 K of it — 600x the H I rms — and nothing moves.
+**Not under a beam.** Spill is far-sidelobe pickup, so it is not convolved
+with the main beam, but the beamed foreground model is `B Uf f`, which cannot
+fit an unbeamed smooth term: the same 0.5 K put 22x the H I power into the
+lowest bin. So with a beam the ground-spill block also carries one unbeamed
+smooth template per spatial term (`--gs-smooth`, on by default when a beam is
+modelled, with its own wide prior `--gs-smooth-prior`).
 
 **The standing-wave ripple is the part that matters.** It is a single
 `k_parallel` mode at `k = 2*pi*B/(Lz*P)`, so all of its power lands in one

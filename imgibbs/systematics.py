@@ -36,7 +36,10 @@ Two things follow, and they set the whole design of this module.
 **The smooth part of ground spill is not identifiable, and does not need to
 be.** It is absorbed to machine precision at any ``n_modes``. Putting a smooth
 template in ``Ug`` would only make the system rank-deficient against ``Uf``.
-:func:`spectral_templates` therefore omits it by default.
+:func:`spectral_templates` therefore omits it by default. **This changes
+under a beam:** spill is not beamed, the foreground model ``B Uf f`` is, and
+the smooth spill is then neither absorbed nor degenerate -- include it
+(``include_smooth=True``; ``run_gibbs.py --gs-smooth``).
 
 **The ripple is identifiable, and it lands where it hurts.** A ripple of
 period ``P`` MHz is a pure ``k_parallel`` mode at ``k = 2*pi*B/(Lz*P)``; on the
@@ -203,10 +206,12 @@ def spectral_templates(freqs, period=RIPPLE_PERIOD_MHZ, n_harmonics=1,
     beta : float
         Index of the envelope multiplying the ripple.
     include_smooth : bool
-        Add the bare envelope as a template. **Off by default and you almost
-        certainly want it off**: it is degenerate with the foreground block to
+        Add the bare envelope as a template. **Off by default, and without a
+        beam you want it off**: it is degenerate with the foreground block to
         machine precision, so including it adds a null direction that only the
-        prior on ``G`` regularises.
+        prior on ``G`` regularises. **With a beam you want it on**: the spill
+        is not beamed but the foreground model is, so ``B Uf f`` cannot fit
+        the smooth spill (``run_gibbs.py --gs-smooth``).
 
     Returns
     -------
