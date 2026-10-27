@@ -18,9 +18,11 @@ The cosine keeps the point-symmetric part of the pattern (the operator must
 be symmetric); the script reports how much asymmetric part is dropped.
 
 The pattern is fixed on the sky at ``--orientation`` (phi = 0 along the
-first map axis). A real scan rotates it with parallactic angle, so this is
-the no-rotation limit and the azimuthal average is the full-rotation limit;
-the truth lies between. The output (``beam`` of shape ``(Nx, Ny, n_freq)``,
+first map axis). A real scan rotates it with parallactic angle; that is what
+``--rotate`` approximates, by averaging the transfer over orientations spread
+uniformly across +-ROTATE degrees about ``--orientation``. ``--rotate 0`` is
+the no-rotation limit, and ``--rotate 90`` covers every orientation of a
+pattern with 180-degree symmetry, i.e. the azimuthal average. The output (``beam`` of shape ``(Nx, Ny, n_freq)``,
 ``freqs``) is derived from the input model, so keep it out of the
 repository::
 
@@ -55,6 +57,11 @@ def main():
                    help='cut the pattern at this radius, deg (default 6)')
     p.add_argument('--orientation', type=float, default=0.0,
                    help='rotate the pattern by this angle on the sky, deg')
+    p.add_argument('--rotate', type=float, default=0.0,
+                   help='average over orientations within +-ROTATE deg, to '
+                        'mimic parallactic rotation during a scan (default 0)')
+    p.add_argument('--n-rotate', type=int, default=13,
+                   help='orientations sampled when --rotate > 0 (default 13)')
     p.add_argument('--check-profiles', default=None,
                    help='a pickle of azimuthal profiles of the same beam; '
                         'compare its profiles with this pattern\'s average')
@@ -84,10 +91,18 @@ def main():
     wt = th * dth
     wt[[0, -1]] *= 0.5
     dph = np.deg2rad(360.0 / nph)
-    phi = np.deg2rad(ph + args.orientation)
+    # Midpoints of n equal slices of [-R, R]: at R = 90 the two ends are the
+    # same orientation, so sampling both would count it twice.
+    n = args.n_rotate if args.rotate > 0 else 1
+    angles = (-args.rotate + (np.arange(n) + 0.5) * 2 * args.rotate / n
+              + args.orientation)
+    # Each orientation is the same pattern with phi shifted; stacking them as
+    # extra quadrature points, each weighted 1/n, averages the transfer.
+    phi = np.deg2rad(ph[None, :] + angles[:, None]).ravel()
     x = (th[None, :] * np.cos(phi)[:, None]).ravel()             # deg
     y = (th[None, :] * np.sin(phi)[:, None]).ravel()
-    w = np.broadcast_to(wt[None, :] * dph, (nph, nth)).ravel()
+    w = np.tile(np.broadcast_to(wt[None, :] * dph, (nph, nth)).ravel(),
+                len(angles)) / len(angles)
 
     kx = 2 * np.pi * np.fft.fftfreq(args.nx, d=args.pix_deg)     # rad/deg
     ky = 2 * np.pi * np.fft.fftfreq(args.ny, d=args.pix_deg)
@@ -96,7 +111,7 @@ def main():
     beam = np.empty((args.nx, args.ny, len(freq)))
     asym = 0.0
     for c in range(len(freq)):
-        pw = P[c].ravel() * w
+        pw = np.tile(P[c].ravel(), len(angles)) * w
         re = np.empty(KX.size)
         im = np.empty(KX.size)
         for s in range(0, KX.size, 256):
@@ -133,7 +148,8 @@ def main():
               f'|difference| {max(diffs):.2e} over {len(diffs)} channels')
 
     np.savez(args.out, beam=beam, freqs=freq, rmax=args.rmax,
-             orientation=args.orientation, pix_deg=args.pix_deg,
+             orientation=args.orientation, rotate=args.rotate,
+             pix_deg=args.pix_deg,
              source=str(Path(args.mat).name))
     print(f'wrote {args.out}')
 

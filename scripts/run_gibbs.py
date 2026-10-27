@@ -150,6 +150,15 @@ def parse_args():
                         '(default: 1, i.e. constant + gradient)')
     g.add_argument('--gs-scan-axis', type=int, default=0, choices=(0, 1),
                    help='map axis the telescope scanned along (default: 0, RA)')
+    g.add_argument('--gs-deflate', action='store_true',
+                   help='project the foreground span out of the ripple '
+                        'templates. The part of a template inside it is '
+                        'degenerate with f and only confuses the split; '
+                        'deflating took the beamless injection test from 15x '
+                        'to the control in the lowest bin (docs/STATUS.md). '
+                        'With a beam it stays close to exact for these '
+                        'templates: they are smooth across the sky, where '
+                        'B is ~1.')
     g.add_argument('--gs-prior', type=float, default=1e-2,
                    help='prior std on each ground-spill amplitude, K '
                         '(default: 1e-2). This is a PRIOR, not a sampled '
@@ -317,7 +326,8 @@ def main():
         sys_basis = groundspill_basis(
             grid.freqs, shape, period=args.gs_period,
             n_harmonics=args.gs_harmonics, order=args.gs_order,
-            scan_axis=args.gs_scan_axis)
+            scan_axis=args.gs_scan_axis,
+            fg_basis=evecs if args.gs_deflate else None)
         G = np.full(sys_basis.n_params, args.gs_prior ** 2)
         g_mean = np.zeros(sys_basis.g_shape)
         bandwidth = grid.freqs[-1] - grid.freqs[0]
@@ -467,6 +477,7 @@ def main():
                    'gs_order': args.gs_order if args.groundspill else None,
                    'gs_scan_axis': args.gs_scan_axis if args.groundspill else None,
                    'gs_prior_K': args.gs_prior if args.groundspill else None,
+                   'gs_deflate': bool(args.groundspill and args.gs_deflate),
                    'data': args.data,
                    'beam_table': args.beam_table,
                    'beam_collapse': (beam is not None

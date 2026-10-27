@@ -174,7 +174,10 @@ def summarise(args):
         g_file = os.path.join(args.out, 'truth_g.npy')
         g_traces = glob.glob(os.path.join(arm_dir, 'samples',
                                           f'g_trace*{sfx}.npy'))
-        if os.path.exists(g_file) and len(g_traces) > args.burn:
+        # A deflated basis is not the one g_true is expressed in, so the
+        # amplitudes are not comparable; judge that arm by P(k).
+        if (os.path.exists(g_file) and len(g_traces) > args.burn
+                and not c.get('gs_deflate')):
             g_true = np.load(g_file).ravel()
             g_traces.sort(key=lambda p: int(Path(p).name[7:].split('_')[0]))
             g = np.array([np.load(f).ravel() for f in g_traces[args.burn:]])
