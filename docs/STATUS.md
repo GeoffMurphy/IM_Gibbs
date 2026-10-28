@@ -1283,7 +1283,9 @@ Read together:
 **5. Deflation was not revisited.** `deflate_foreground` projects the span of
 `Uf` out of a systematic's templates. With a beam the model's foreground span
 is `B Uf`; by (1) the two differ negligibly for a smooth beam, but a rippled
-measured beam would need the deflation done against `B Uf`.
+measured beam would need the deflation done against `B Uf`. (Since tested
+for ground spill, finding 9: under a beam, deflation made no difference, and
+the smooth spill needs the opposite treatment.)
 
 **6. How accurately the beam must be known — the width is forgiving, the
 spectral structure is not.** (2026-10-26.) Same beamed mock (made with the
@@ -1374,13 +1376,147 @@ fitted with the UHF model (finding 4).
   remaining real-data question; these runs bound it between "harmless" and
   "4x".
 
+**8. How good the L-band model is: frequency sampling is fine, the
+azimuthal average is not (without parallactic rotation).** (2026-10-27.)
+The 1-D profiles are the azimuthal average of a full 2D L-band pattern
+(Jones terms on a polar grid, 2 MHz) — checked: the two agree to 9e-5.
+`build_beam_grid.py` transforms the 2D pattern straight onto the map's
+`(kx, ky)` grid, and `load_beam_table` accepts the result. The pattern is
+about 2.4% elliptical (FWHM along the two axes). The transfer must be
+symmetric, so the odd part of the pattern is dropped; it is up to 3% of
+`B(0)`, and no run here tests it (mock and model both omit it). Against the
+1-D table, the 2D transfer differs by up to 1.2e-2 (rms 2.1e-3); the same
+table thinned to 4 MHz and re-interpolated differs by up to 1.5e-4.
+
+Mocks made with the unrotated 2D beam (`beam_injection_L2d`) and with the
+2 MHz 1-D table (finding 7's), 1500 samples, burn-in 300:
+
+| truth | model | bin 0 | 1 | 2 |
+|---|---|---|---|---|
+| 2D, unrotated | 2D (exact) | 1.01 ± 0.15 | 1.11 ± 0.08 | 0.88 ± 0.05 |
+| 2D, unrotated | 1-D azimuthal average | **199 ± 24** | **3.0 ± 0.2** | 0.89 ± 0.05 |
+| 1-D, 2 MHz | 1-D at 4 MHz, interpolated | 1.54 ± 0.20 | 1.17 ± 0.08 | 0.97 ± 0.06 |
+
+(Bins 3–4 prior-dominated throughout. Beam-passed cross-power with the true
+H I in bin 0: 0.26 for the exact 2D model, 0.03 for the 1-D one.)
+
+- **The 2D path works.** Fitted with its own beam, the 2D mock recovers
+  exactly what the 1-D mock did.
+- **Frequency sampling is adequate at 2 MHz.** Halving the sampling moves bin
+  0 by +0.5 (2.7 sigma), bins 1–2 within errors. Linear interpolation error
+  falls as the square of the spacing, so 2 MHz against a finer model should
+  be ~16x smaller in power. That is an extrapolation, not a run.
+- **A pattern fixed on the sky is badly modelled by its azimuthal average:
+  199x in bin 0.** The transfer error is only 1% at most, smaller than the
+  2% width error of finding 6 that was harmless, so it is not the size of
+  the error that matters. A width error keeps the beam's frequency structure
+  in step at every `k_perp`, so foreground modes absorb it. The azimuthal
+  structure of an offset-Gregorian beam is not in step: plausibly the ripple
+  differs with azimuth (not checked directly). But a fixed orientation is
+  the worst case. Parallactic rotation during a scan, and co-adding nights,
+  average the pattern towards the azimuthal mean. ±90 deg of rotation
+  reproduces the 1-D table to 1e-4.
+
+**How much rotation is enough.** Mocks made with the 2D pattern averaged over
+orientations within ±R (`build_beam_grid.py --rotate R`), each fitted with
+the exact (rotated) grid and with the 1-D table, 1500 samples:
+
+| truth: rotation | rms of B_truth - B_1D | 1-D model: bin 0 | bin 1 | exact model: bin 0 |
+|---|---|---|---|---|
+| none | 2.1e-3 | **199 ± 24** | **3.0** | 1.01 ± 0.15 |
+| ±15 deg | 2.0e-3 | **165 ± 21** | **2.8** | 1.00 ± 0.15 |
+| ±45 deg | 1.3e-3 | **48 ± 4** | **1.8** | 0.98 ± 0.15 |
+| ±90 deg | 2.2e-5 | (not run: same transfer as the 1-D table to 1e-4) | | |
+
+(Bin 2 is 0.88–0.89 in every arm; bins 3–4 prior.)
+
+- **The exact model recovers every rotated truth** (bin 0 0.98–1.01), so
+  `--rotate` and the 2D path are right.
+- **The excess in bin 0 tracks the square of the transfer error**, roughly:
+  excess / rms^2 is 4.6e7, 4.1e7, 2.7e7 for the three rows. On that
+  scaling the excess falls below the bin-0 error bar (0.15) only once the
+  rms is below ~7e-5, i.e. near-uniform coverage of all orientations. This
+  is an extrapolation from three points, not a run.
+- **For real data this is the open question.** The 1-D (azimuthally
+  averaged) model is adequate only if every pixel is seen over close to a
+  full 180 deg of parallactic angle, across scans and nights. If not, the
+  model should be the pattern averaged over each map's actual coverage
+  (`--rotate` approximates a uniform spread). Coverage that varies across
+  the map is not diagonal in `k_perp` at all, so the operator here would
+  itself be an approximation. Next step: the parallactic-angle distribution
+  per pixel of the MeerKLASS scans. Not done; it needs the real pointing
+  data.
+
+**9. Ground spill and the beam together.** (2026-10-27.) Mock: the L-band 1-D
+beam on H I and foreground, plus an unbeamed ground-spill term (spill level
+0.5 K, ripple 1 mK rms at 17.5 MHz, gradient 0.3), 1500 samples:
+
+| model | bin 0 | 1 | 2 | `g` recovered |
+|---|---|---|---|---|
+| beam, no ground-spill block | **150 ± 9** | **2.3 ± 0.2** | 0.89 ± 0.05 | — |
+| beam + ground-spill block, not deflated | **22 ± 2.5** | 1.39 ± 0.12 | 0.91 ± 0.06 | 1.11 ± 0.02 |
+| beam + ground-spill block, deflated (`--gs-deflate`) | **24 ± 2.6** | 1.39 ± 0.12 | 0.91 ± 0.06 | (not comparable) |
+| ground-spill block, no beam | **14.5 ± 0.9** | 0.38 | 0.010 | 0.60 ± 0.01 |
+| beam + ground-spill block + smooth template (`--gs-smooth`) | **16 ± 1.7** | 1.36 ± 0.11 | 0.89 ± 0.05 | 1.09 ± 0.01 |
+
+**The cause: the smooth spill, not the ripple.** The mock's spill is 0.5 K
+of smooth spillover plus the 1 mK ripple, and it enters *after* the beam
+(far-sidelobe pickup). Without a beam the smooth part lies in span(`Uf`) and
+vanishes (the README's "invisible, and harmlessly so"). With a beam the
+foreground model is `B Uf f`, and an unbeamed smooth term is not in its
+span at any `k_perp` where `B` departs from 1. A noise-free least-squares fit
+of `B Uf f + Ug g` to the injected spill alone (scratch `gjoint.py`,
+`gsmooth.py` on ilifu) reproduces the run:
+
+| `g` templates | ripple amplitude fitted | leftover / P_HI, beam-passed modes, bin 0 |
+|---|---|---|
+| none | — | 373 |
+| ripple only (the run above) | 1.08 (run: 1.11) | **23** (run: 22) |
+| ripple + one unbeamed smooth template | — | 8e-13 |
+
+The smooth template is the ripple's envelope, `nu^-2`, which is what was
+injected, so that row is circular. Injecting the smooth spill as `nu^-1`, or
+`nu^(-2.7 + 0.3 ln nu)`, and fitting with the same `nu^-2` template leaves
+3e-4 and 1e-4 of P_HI: over a 76 MHz band one smooth template is enough.
+An unbeamed copy of the 6 Legendre modes gets closer still (1e-11), but
+both are negligible, so the single template was kept.
+
+- **Deflation cannot fix this and did not** (24x against 22x). It removes
+  the smooth part from the `g` templates, which is the opposite of what is
+  needed.
+- **Candidate fix: `run_gibbs.py --gs-smooth`** (default `auto`: on when a
+  beam is modelled). It adds the envelope as a spectral template for each spatial
+  term, with its own prior, `--gs-smooth-prior` (default 10 K; spill is ~0.5
+  K, and the ripple prior of 1e-2 K would pin it to zero). It refuses
+  `--gs-deflate`, which would project it out.
+- **But in the sampler the fix only gets bin 0 from 22x to 16x**
+  (2026-10-28), against ~1 predicted. The sampled smooth amplitudes are
+  wrong: the constant term sits at 0.088 K (truth 1.66), with a posterior
+  spread of 1e-5 K in a direction whose prior allows 10 K, unchanged from the
+  first sample. The gradient term creeps from 0.021 to 0.024 over 1500
+  samples (truth 0.50). Matvecs per solve fell from 69 to 32 when the
+  template was added. Reading: the smooth template is nearly degenerate with
+  `B Uf f` (exactly so at `k_perp = 0`, where `B = 1`), and the warm-started
+  LGMRES solves (rtol 1e-6) meet the tolerance without moving along that
+  direction. Under test: `--tol 1e-9`. If that is the cause, the cleaner fix
+  is to remove the degeneracy rather than out-solve it, e.g. a smooth
+  template with its `B Uf` component projected out (deflation against
+  `B Uf`, as finding 5 anticipated; the templates are then no longer
+  separable).
+- **The spatial shape still has to be right.** The smooth template
+  inherits the ripple block's spatial terms (constant + scan gradient,
+  `--gs-order`). Real spill varies with elevation and azimuth; a mock whose
+  smooth spill has spatial structure outside those terms would leak in the
+  same way. Not tested.
+
 **Related but separate work — check before extending this.** Geoff's
-observational run (`gibbs_beam`, out of `Sampling Nb/`) and the MSc student's
-beam (added on ilifu since 2026-09-13, see `~/handover/OPEN_ITEMS.md` item 7)
-are not visible from here and were not consulted. The FWHM and any measured
-`B(k_perp, nu)` should come from them, not from a formula; and if the
-student's version is meant to be the one that lands, this branch should be
-reconciled with it rather than merged over it. The `museek` ripple-beam
+observational run (`Sampling Nb/`, `make_beam_transfer.py`) builds its
+transfer from the same L-band 1-D profiles: its `beam_transfer_L2021.npz`
+matches `build_beam_table.py`'s output to 5e-5, so the two agree. The MSc
+student's beam (added on ilifu since 2026-09-13, see
+`~/handover/OPEN_ITEMS.md` item 7) was not consulted; if theirs is meant to
+be the one that lands, this branch should be reconciled with it rather than
+merged over it. The `museek` ripple-beam
 project (UHF, `~/beam_correction/NOTES.md`) shares physics, not code.
 
 ### Smaller open items
