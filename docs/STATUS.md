@@ -1498,8 +1498,14 @@ both are negligible, so the single template was kept.
   template was added. Reading: the smooth template is nearly degenerate with
   `B Uf f` (exactly so at `k_perp = 0`, where `B = 1`), and the warm-started
   LGMRES solves (rtol 1e-6) meet the tolerance without moving along that
-  direction. Under test: `--tol 1e-9`. If that is the cause, the cleaner fix
-  is to remove the degeneracy rather than out-solve it, e.g. a smooth
+  direction. **Confirmed with `--tol 1e-9`** (2026-10-29, cancelled after
+  12 samples in 22 h): every solve hit the LGMRES iteration limit, and the
+  gradient term then moved ~0.003 per sample instead of ~2e-6 (0.015 ->
+  0.039 over 12 samples). It would need ~150 samples, about 12 days, to
+  reach the truth. The constant term still did not move. That one is
+  exactly degenerate with `f` at `k_perp = 0` and harmless to `s`. So the
+  conditioning is the problem, and out-solving it is not practical.
+  The cleaner fix is to remove the degeneracy, e.g. a smooth
   template with its `B Uf` component projected out (deflation against
   `B Uf`, as finding 5 anticipated; the templates are then no longer
   separable).
