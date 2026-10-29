@@ -1509,6 +1509,23 @@ both are negligible, so the single template was kept.
   template with its `B Uf` component projected out (deflation against
   `B Uf`, as finding 5 anticipated; the templates are then no longer
   separable).
+- **Projecting `B Uf` out of the smooth template does not fix it either**
+  (`beam_project`, commit 957ffce; local 9-sample test on a UHF mock with
+  the same spill, 2026-10-29). It did remove the `f` degeneracy: the
+  constant term, whose projected template is ~0, now samples its 10 K prior
+  freely, as it should. The gradient term still sticks: -0.033 from sample 1
+  on, moving ~3e-4 per sample (truth 0.50). Reading: the part of the
+  template that `B Uf f` cannot fit sits in beam-passed modes, where `B Us s`
+  can fit it, so the near-null direction is now `g` against `s`. The
+  ripple's own gradient term shows the same thing in every run so far:
+  5.6e-4 against a truth of 2.9e-4, still rising. The block-diagonal
+  preconditioner has no `g`-`s` coupling, and a warm-started solve at rtol
+  1e-6 of `||b||` stops before it resolves the direction. Candidate fix
+  (not implemented): marginalise `g` analytically, i.e. solve for `(s, f)`
+  with noise `N + Ug G Ug^T` (a rank-6 Woodbury update to `w N^-1`), then
+  draw `g | s, f, d` exactly. That is the same joint posterior, and the
+  near-null direction becomes six outlying eigenvalues, which a Krylov
+  solver handles in a few extra iterations.
 - **The spatial shape still has to be right.** The smooth template
   inherits the ripple block's spatial terms (constant + scan gradient,
   `--gs-order`). Real spill varies with elevation and azimuth; a mock whose
