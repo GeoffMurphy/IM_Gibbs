@@ -175,7 +175,10 @@ with the main beam, but the beamed foreground model is `B Uf f`, which cannot
 fit an unbeamed smooth term: the same 0.5 K put 22x the H I power into the
 lowest bin. So with a beam the ground-spill block also carries one unbeamed
 smooth template per spatial term (`--gs-smooth`, on by default when a beam is
-modelled, with its own wide prior `--gs-smooth-prior`).
+modelled, with its own wide prior `--gs-smooth-prior`). **Not yet working:**
+the template is nearly degenerate with `B Uf f`, and the solver barely moves
+its amplitude, so bin 0 only improves from 22x to 16x (`docs/STATUS.md`,
+finding 9 of "The beam in the MODEL").
 
 **The standing-wave ripple is the part that matters.** It is a single
 `k_parallel` mode at `k = 2*pi*B/(Lz*P)`, so all of its power lands in one
