@@ -37,7 +37,7 @@ from .beam import (
     beam_run_args,
 )
 from .linear_system import (
-    MaskedForegroundBlock,
+    MaskedForegroundBlock, MarginalNoise,
     Uf,
     Us,
     construct_A,
@@ -54,7 +54,7 @@ __all__ = [
     'make_kbins', 'kbins_from_crop', 'footprint_kmin', 'bin_it',
     'power_spectrum',
     'Us', 'Uf', 'construct_Uf', 'construct_A', 'construct_b',
-    'construct_preconditioner', 'MaskedForegroundBlock',
+    'construct_preconditioner', 'MaskedForegroundBlock', 'MarginalNoise',
     'signal_covariance_sampler', 'foreground_covariance_sampler',
     'SystematicBasis', 'TemplateBasis', 'beam_project',
     'project_out_beamed', 'groundspill_basis', 'groundspill_cube',

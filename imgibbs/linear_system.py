@@ -410,7 +410,7 @@ class MaskedForegroundBlock:
 
 def construct_b(S, N_inv, F, w, s_mean, f_mean, evecs, data_cube, ws, wf, wd,
                 shape, sys_basis=None, G=None, wg=None, g_mean=None,
-                beam=None):
+                beam=None, weighted_data=None):
     """Build the RHS of ``Ax = b``.
 
     Combines the data term, the prior-mean terms, and the omega (``ws``,
@@ -425,24 +425,29 @@ def construct_b(S, N_inv, F, w, s_mean, f_mean, evecs, data_cube, ws, wf, wd,
     With ``beam`` supplied, the weighted data and its omega term reach the
     signal and foreground rows through ``B`` (``B^T = B``), and the
     systematic row directly.
+
+    ``weighted_data``, if given, replaces ``N^-1 w d + (N^-1 w)^1/2 wd`` --
+    the weighted data plus its noise draw -- for a noise model that is not
+    diagonal (:meth:`MarginalNoise.weighted_data`).
     """
     rfft_shape = np.shape(s_mean)
 
     # Truncate S from full fftn shape (Nx,Ny,Nz) to rfft shape (Nx,Ny,Nz//2+1)
     S = S.reshape(shape)[:, :, :shape[2] // 2 + 1].flatten()
 
-    if beam is not None:
-        return _construct_b_beam(S, N_inv, F, w, s_mean, f_mean, evecs,
-                                 data_cube, ws, wf, wd, shape, rfft_shape,
-                                 sys_basis, G, wg, g_mean, beam)
+    r = (weighted_data if weighted_data is not None
+         else (N_inv) * w * data_cube.flatten() + (np.sqrt(N_inv)) * np.sqrt(w) * wd)
 
-    b0 = (Us(((N_inv) * w * data_cube.flatten()
-              + (np.sqrt(N_inv)) * np.sqrt(w) * wd).reshape(shape), True)
+    if beam is not None:
+        return _construct_b_beam(S, F, s_mean, f_mean, evecs, r, ws, wf,
+                                 shape, rfft_shape, sys_basis, G, wg, g_mean,
+                                 beam)
+
+    b0 = (Us(r.reshape(shape), True)
           + ((1 / S) * s_mean.flatten()).reshape(rfft_shape)
           + ((1 / np.sqrt(S)) * ws).reshape(rfft_shape))
 
-    b1 = (Uf(evecs, ((N_inv) * w * data_cube.flatten()
-                     + (np.sqrt(N_inv)) * np.sqrt(w) * wd).reshape(shape), True)
+    b1 = (Uf(evecs, r.reshape(shape), True)
           + ((1 / F) * f_mean)
           + ((1 / np.sqrt(F)) * wf))
 
@@ -456,8 +461,7 @@ def construct_b(S, N_inv, F, w, s_mean, f_mean, evecs, data_cube, ws, wf, wd,
     if wg is None:
         wg = np.zeros(sys_basis.g_shape)
 
-    b2 = (sys_basis.adjoint((N_inv) * w * data_cube.flatten()
-                            + (np.sqrt(N_inv)) * np.sqrt(w) * wd)
+    b2 = (sys_basis.adjoint(r)
           + (1 / G) * np.asarray(g_mean).reshape(sys_basis.g_shape)
           + (1 / np.sqrt(G)) * np.asarray(wg).reshape(sys_basis.g_shape))
 
@@ -465,10 +469,10 @@ def construct_b(S, N_inv, F, w, s_mean, f_mean, evecs, data_cube, ws, wf, wd,
                            b1.real.flatten(), b2.real.flatten()])
 
 
-def _construct_b_beam(S, N_inv, F, w, s_mean, f_mean, evecs, data_cube, ws, wf,
-                      wd, shape, rfft_shape, sys_basis, G, wg, g_mean, beam):
-    """``construct_b`` with the sky passed through the beam."""
-    r = (N_inv) * w * data_cube.flatten() + (np.sqrt(N_inv)) * np.sqrt(w) * wd
+def _construct_b_beam(S, F, s_mean, f_mean, evecs, r, ws, wf, shape,
+                      rfft_shape, sys_basis, G, wg, g_mean, beam):
+    """``construct_b`` with the sky passed through the beam. ``r`` is the
+    weighted data plus its noise draw."""
     rB = beam.apply(r).reshape(shape)
 
     b0 = (Us(rB, True)
@@ -491,3 +495,82 @@ def _construct_b_beam(S, N_inv, F, w, s_mean, f_mean, evecs, data_cube, ws, wf,
         out.append(b2.real.flatten())
 
     return np.concatenate(out)
+
+
+class MarginalNoise:
+    """Noise weights with a systematic block integrated out.
+
+    Sampling ``(s, f, g)`` jointly leaves a near-null direction wherever a
+    template can be traded against ``B Us s`` or ``B Uf f``: the solver
+    barely moves along it (docs/STATUS.md, finding 9 of "The beam in the
+    MODEL"). Integrating ``g`` out instead treats the systematic as
+    correlated noise, ``N' = N_w + Ug G Ug^T``, solves for ``(s, f)`` with
+    it, and then draws ``g | s, f, d`` exactly. The joint posterior is the
+    same; the troublesome direction becomes ``n_params`` outlying
+    eigenvalues, which a Krylov solver absorbs in a few iterations.
+
+    With masked voxels ``N_w^-1 = w N^-1`` has zeros, so ``N'`` is never
+    formed; its inverse is, by Woodbury, a rank-``n_params`` update::
+
+        N'^-1 = W - W Ug P^-1 Ug^T W,    P = G^-1 + Ug^T W Ug,  W = w N^-1
+
+    ``obj * y`` applies ``N'^-1`` to a flattened cube, so an instance stands
+    in for the weight vector ``Nw_inv`` in :func:`construct_A`.
+
+    Parameters
+    ----------
+    Nw_inv : array, length Nx*Ny*Nz
+        ``w N^-1``.
+    sys_basis : SystematicBasis or TemplateBasis
+    G : array, length ``n_params``
+        Prior variance of each amplitude. The prior mean is zero.
+    """
+
+    # Make ``array * obj`` defer to __rmul__ instead of broadcasting obj.
+    __array_ufunc__ = None
+
+    def __init__(self, Nw_inv, sys_basis, G):
+        self.W = np.asarray(Nw_inv, dtype=float).ravel()
+        self.basis = sys_basis
+        self.G = np.asarray(G, dtype=float).ravel()
+        eye = np.eye(sys_basis.n_params)
+        # Rows are W Ug e_i, so WU @ y = Ug^T W y and WU.T @ a = W Ug a.
+        self.WU = np.array([self.W * sys_basis.apply(e) for e in eye])
+        P = np.diag(1 / self.G) + np.array(
+            [sys_basis.adjoint(row).ravel() for row in self.WU])
+        self.P = 0.5 * (P + P.T)
+        self.chol = np.linalg.cholesky(self.P)
+
+    def _solve_P(self, v):
+        return np.linalg.solve(self.P, v)
+
+    def __mul__(self, y):
+        y = np.asarray(y).ravel()
+        return self.W * y - self.WU.T @ self._solve_P(self.WU @ y)
+
+    __rmul__ = __mul__
+
+    def weighted_data(self, data_cube, wd, wg):
+        """``N'^-1 d`` plus a draw with covariance ``N'^-1``.
+
+        ``wd`` (one per voxel) and ``wg`` (one per amplitude) are standard
+        normal. With ``z = W d + W^1/2 wd``, the returned
+        ``z - W Ug P^-1 (Ug^T z - G^-1/2 wg)`` has mean ``N'^-1 d`` and noise
+        covariance ``W - W Ug P^-1 Ug^T W = N'^-1``.
+        """
+        z = (self.W * np.asarray(data_cube).ravel()
+             + np.sqrt(self.W) * np.asarray(wd).ravel())
+        v = (self.basis.adjoint(z).ravel()
+             - np.asarray(wg).ravel() / np.sqrt(self.G))
+        return z - self.WU.T @ self._solve_P(v)
+
+    def draw(self, resid, eta):
+        """A draw of ``g | s, f, d``: ``N(P^-1 Ug^T W resid, P^-1)``.
+
+        ``resid`` is the data minus the (beamed) sky model, flattened;
+        ``eta`` is standard normal, length ``n_params``. Returns ``g`` in
+        ``sys_basis.g_shape``.
+        """
+        mean = self._solve_P(self.WU @ np.asarray(resid).ravel())
+        g = mean + np.linalg.solve(self.chol.T, np.asarray(eta).ravel())
+        return g.reshape(self.basis.g_shape)

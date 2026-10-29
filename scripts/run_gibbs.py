@@ -54,7 +54,7 @@ from imgibbs import (                                          # noqa: E402
     Us, construct_A, construct_b, construct_preconditioner,
     bin_it, kbins_from_crop, survey_grid, data_path, load, load_l2021_cube,
     groundspill_basis, ripple_wavenumber, gaussian_beam, beam_fwhm,
-    load_beam_table, MaskedForegroundBlock, beam_project,
+    load_beam_table, MaskedForegroundBlock, MarginalNoise, Uf, beam_project,
     signal_covariance_sampler as SCS,
     foreground_covariance_sampler as FCS,
 )
@@ -171,6 +171,16 @@ def parse_args():
                         'bin of the beamed injection test (docs/STATUS.md, '
                         "finding 9 of 'The beam in the MODEL'). Without a "
                         'beam it is degenerate with the foreground block.')
+    g.add_argument('--gs-solve', choices=('auto', 'joint', 'marginal'),
+                   default='auto',
+                   help='joint: sample g in the same solve as s and f. '
+                        'marginal: integrate g out of that solve (it becomes '
+                        'correlated noise, N + Ug G Ug^T) and draw it '
+                        'afterwards from g | s, f, d -- the same posterior. '
+                        'auto (the default): marginal when a beam is '
+                        'modelled, where the joint solve barely moves g '
+                        "(docs/STATUS.md, finding 9 of 'The beam in the "
+                        "MODEL').")
     g.add_argument('--gs-smooth-prior', type=float, default=10.0,
                    help='prior std on each smooth-spill amplitude, K '
                         '(default: 10). Spill is ~0.5 K, far above the '
@@ -399,11 +409,18 @@ def main():
     else:
         beam = None
 
-    # The smooth spill template is almost reproducible by B Uf f; left as it
-    # is, the solver barely moves its amplitude (docs/STATUS.md, finding 9 of
-    # 'The beam in the MODEL'). Projecting that part out leaves what the
-    # model can fit unchanged and removes the near-null direction.
-    if gs_smooth and beam is not None:
+    gs_solve = None
+    if sys_basis is not None:
+        gs_solve = (args.gs_solve if args.gs_solve != 'auto'
+                    else ('marginal' if beam is not None else 'joint'))
+        print(f'               g solve: {gs_solve}')
+
+    # In a joint solve the smooth spill template is almost reproducible by
+    # B Uf f, and the solver barely moves its amplitude (docs/STATUS.md,
+    # finding 9 of 'The beam in the MODEL'). Projecting that part out leaves
+    # what the model can fit unchanged and removes that near-null direction,
+    # though not the one against B Us s. Integrating g out removes both.
+    if gs_smooth and beam is not None and gs_solve == 'joint':
         sys_basis = beam_project(sys_basis, beam.full_transfer(), evecs,
                                  rows=[0])
         print('               smooth templates: B Uf projected out')
@@ -442,7 +459,13 @@ def main():
     rfft_shape = s_true.shape
     f_len = f_true.size
     f_shape = f_true.shape
-    g_len = 0 if sys_basis is None else sys_basis.n_params
+    # With g integrated out, the solve is over (s, f) alone and the noise
+    # weights become an operator; g is drawn after each solve.
+    marg = (MarginalNoise(Nw_inv, sys_basis, G) if gs_solve == 'marginal'
+            else None)
+    solve_basis = None if marg is not None else sys_basis
+    A_noise = marg if marg is not None else Nw_inv
+    g_len = 0 if solve_basis is None else solve_basis.n_params
     total_len = 2 * rfft_len + f_len + g_len
 
     # ------------------------------------------------------------------
@@ -464,16 +487,16 @@ def main():
 
     x = np.concatenate([s_mean.real.flatten(), s_mean.imag.flatten(),
                         f_proj.flatten()]
-                       + ([g_mean.flatten()] if sys_basis is not None else []))
+                       + ([g_mean.flatten()] if solve_basis is not None else []))
 
     A_calls = [0]
     matvecs = []
 
     def A_flat(vec):
         A_calls[0] += 1
-        return construct_A(vec, S, Nw_inv, F, w, evecs, rfft_len, rfft_shape,
+        return construct_A(vec, S, A_noise, F, w, evecs, rfft_len, rfft_shape,
                            f_len, f_shape, shape,
-                           sys_basis=sys_basis, G=G, beam=beam).flatten()
+                           sys_basis=solve_basis, G=G, beam=beam).flatten()
 
     L = LinearOperator(matvec=A_flat, rmatvec=A_flat, shape=(len(x), len(x)))
 
@@ -493,7 +516,7 @@ def main():
     precond_apply = construct_preconditioner(S, N_inv_scalar, F, evecs,
                                              rfft_len, rfft_shape, f_len,
                                              f_shape, shape,
-                                             sys_basis=sys_basis, G=G,
+                                             sys_basis=solve_basis, G=G,
                                              beam=beam, fg_block=fg_block)
 
     # ------------------------------------------------------------------
@@ -517,7 +540,9 @@ def main():
                    'gs_deflate': bool(args.groundspill and args.gs_deflate),
                    'gs_smooth': bool(args.groundspill and gs_smooth),
                    'gs_smooth_projected': bool(args.groundspill and gs_smooth
-                                               and beam is not None),
+                                               and beam is not None
+                                               and gs_solve == 'joint'),
+                   'gs_solve': gs_solve,
                    'gs_smooth_prior_K': (args.gs_smooth_prior
                                          if args.groundspill and gs_smooth
                                          else None),
@@ -560,8 +585,10 @@ def main():
               else np.random.normal(size=sys_basis.g_shape))
 
         b = construct_b(S, N_inv, F, w, s_mean, f_mean, evecs, data_cube,
-                        ws, wf, wd, shape, sys_basis=sys_basis, G=G,
-                        wg=wg, g_mean=g_mean, beam=beam)
+                        ws, wf, wd, shape, sys_basis=solve_basis, G=G,
+                        wg=wg, g_mean=g_mean, beam=beam,
+                        weighted_data=(None if marg is None else
+                                       marg.weighted_data(data_cube, wd, wg)))
 
         M_inv = LinearOperator((total_len, total_len), matvec=precond_apply)
         n_mv = A_calls[0]
@@ -575,6 +602,14 @@ def main():
         s = (x[0:rfft_len].reshape(rfft_shape)
              + x[rfft_len:2 * rfft_len].reshape(rfft_shape) * 1j)
         s = Us(s, False)
+        if marg is not None:
+            # g | s, f, d: the residual after the (beamed) sky model.
+            sky = s.flatten() + Uf(evecs, x[2 * rfft_len:2 * rfft_len + f_len]
+                                   .reshape(f_shape).real, False)
+            if beam is not None:
+                sky = beam.apply(sky)
+            g_draw = marg.draw(data_cube.flatten() - sky,
+                               np.random.normal(size=sys_basis.n_params))
         s = np.fft.fftn(s - np.mean(s), norm='ortho')
 
         binned_s, k_bins = bin_it(s, sig_k, idxs_S)
@@ -617,6 +652,7 @@ def main():
         if sys_basis is not None:
             g_off = 2 * rfft_len + f_len
             np.save(os.path.join(sample_dir, f'g_trace{rr}{suffix}.npy'),
+                    g_draw if marg is not None else
                     x[g_off:g_off + g_len].reshape(sys_basis.g_shape))
 
         f_ms = x[2 * rfft_len:2 * rfft_len + f_len].reshape(f_shape).real
@@ -636,7 +672,7 @@ def main():
         precond_apply = construct_preconditioner(S, N_inv_scalar, F, evecs,
                                                  rfft_len, rfft_shape, f_len,
                                                  f_shape, shape,
-                                                 sys_basis=sys_basis, G=G,
+                                                 sys_basis=solve_basis, G=G,
                                                  beam=beam, fg_block=fg_block)
         gc.collect()
 

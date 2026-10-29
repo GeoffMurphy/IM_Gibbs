@@ -27,7 +27,7 @@ from scipy.sparse.linalg import LinearOperator, lgmres
 from imgibbs import (
     FWHM_TO_SIGMA, Beam, beam_fwhm, chromatic_leakage, construct_A,
     construct_b, construct_preconditioner, gaussian_beam, groundspill_basis,
-    beam_project, project_out_beamed,
+    beam_project, project_out_beamed, MarginalNoise, Us, Uf,
 )
 
 SHAPE = (8, 6, 16)
@@ -667,3 +667,91 @@ def test_beam_project_keeps_unselected_templates_and_is_a_true_basis():
     assert np.isclose(tb.apply(g) @ y, (g * tb.adjoint(y)).sum(), rtol=1e-12)
     explicit = np.array([tb.apply(e) for e in np.eye(tb.n_params)])
     assert np.allclose(tb.gram(), explicit @ explicit.T)
+
+
+# ---------------------------------------------------------------------------
+# Integrating the systematic out (MarginalNoise)
+# ---------------------------------------------------------------------------
+
+def masked_weights(seed=5):
+    """``w N^-1`` with some voxels flagged."""
+    w = (np.random.default_rng(seed).random(int(np.prod(SHAPE))) > 0.2)
+    return 2.0 * w
+
+
+def test_marginal_noise_is_the_woodbury_inverse():
+    """Unmasked, ``N'^-1`` must equal the inverse of ``N + Ug G Ug^T``."""
+    basis = smooth_basis()
+    rng = np.random.default_rng(6)
+    W = rng.uniform(1.0, 3.0, int(np.prod(SHAPE)))
+    G = rng.uniform(0.5, 2.0, basis.n_params)
+    mn = MarginalNoise(W, basis, G)
+    U = np.array([basis.apply(e) for e in np.eye(basis.n_params)]).T
+    dense = np.linalg.inv(np.diag(1 / W) + U @ np.diag(G) @ U.T)
+    y = rng.normal(size=W.size)
+    assert np.allclose(mn * y, dense @ y, rtol=1e-9)
+    assert np.allclose(y * mn, mn * y)            # numpy must not broadcast
+
+
+def test_marginal_weighted_data_has_the_right_mean_and_covariance():
+    """``weighted_data`` is linear in the draws; its covariance must be
+    ``N'^-1`` exactly, masked voxels included, and its mean ``N'^-1 d``."""
+    basis = smooth_basis()
+    W = masked_weights()
+    G = np.random.default_rng(7).uniform(0.5, 2.0, basis.n_params)
+    mn = MarginalNoise(W, basis, G)
+    n, p = W.size, basis.n_params
+    d = np.random.default_rng(8).normal(size=n)
+    zero_d, zero_g = np.zeros(n), np.zeros(p)
+    assert np.allclose(mn.weighted_data(d, zero_d, zero_g), mn * d)
+    J = np.array([mn.weighted_data(zero_d, e, zero_g) for e in np.eye(n)]
+                 + [mn.weighted_data(zero_d, zero_d, e) for e in np.eye(p)]).T
+    dense = np.array([mn * e for e in np.eye(n)]).T
+    assert np.allclose(J @ J.T, dense, atol=1e-12)
+
+
+def test_marginal_solve_matches_the_joint_solve():
+    """MAP solution (omegas zero), masked and beamed: solving for (s, f) with
+    ``g`` integrated out and then taking ``E[g | s, f, d]`` must give the
+    joint solve's (s, f, g) exactly. This is the whole claim."""
+    nx, ny, nz = SHAPE
+    rng = np.random.default_rng(9)
+    beam = chromatic(index=2.0)
+    basis = smooth_basis()
+    evecs = legendre_basis(nz, N_MODES)
+    S = np.abs(rng.normal(size=nx * ny * nz)) + 1.0
+    F = np.abs(rng.normal(size=N_MODES)) + 1.0
+    G = rng.uniform(0.5, 2.0, basis.n_params)
+    W = masked_weights()
+    w = (W > 0).astype(float)
+    rl, rs = nx * ny * (nz // 2 + 1), (nx, ny, nz // 2 + 1)
+    fl, fs = nx * ny * N_MODES, (nx, ny, N_MODES)
+    d = rng.normal(size=SHAPE) * w.reshape(SHAPE)
+    zeros = dict(ws=np.zeros(rl), wf=np.zeros(fs), wd=np.zeros(W.size))
+    common = (S, 2.0, F, w, np.zeros(rs), np.zeros(fs), evecs, d)
+
+    def dense(Nw, sys_basis, n):
+        return np.array([construct_A(np.eye(n)[i], S, Nw, F, w, evecs, rl, rs,
+                                     fl, fs, SHAPE, sys_basis=sys_basis,
+                                     G=G, beam=beam)
+                         for i in range(n)]).T
+
+    n_sf = 2 * rl + fl
+    b_joint = construct_b(*common, zeros['ws'], zeros['wf'], zeros['wd'],
+                          SHAPE, sys_basis=basis, G=G,
+                          wg=np.zeros(basis.g_shape), beam=beam)
+    x_joint = np.linalg.solve(dense(W, basis, n_sf + basis.n_params), b_joint)
+
+    mn = MarginalNoise(W, basis, G)
+    b_marg = construct_b(*common, zeros['ws'], zeros['wf'], zeros['wd'],
+                         SHAPE, beam=beam,
+                         weighted_data=mn.weighted_data(
+                             d, zeros['wd'], np.zeros(basis.n_params)))
+    x_marg = np.linalg.solve(dense(mn, None, n_sf), b_marg)
+    s = Us((x_marg[:rl] + 1j * x_marg[rl:2 * rl]).reshape(rs), False)
+    f = x_marg[2 * rl:].reshape(fs)
+    sky = beam.apply(s.ravel() + Uf(evecs, f, False))
+    g = mn.draw(d.ravel() - sky, np.zeros(basis.n_params))
+
+    assert np.allclose(x_marg, x_joint[:n_sf], rtol=1e-8, atol=1e-10)
+    assert np.allclose(g.ravel(), x_joint[n_sf:], rtol=1e-8, atol=1e-10)
