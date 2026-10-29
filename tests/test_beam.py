@@ -27,6 +27,7 @@ from scipy.sparse.linalg import LinearOperator, lgmres
 from imgibbs import (
     FWHM_TO_SIGMA, Beam, beam_fwhm, chromatic_leakage, construct_A,
     construct_b, construct_preconditioner, gaussian_beam, groundspill_basis,
+    beam_project, project_out_beamed,
 )
 
 SHAPE = (8, 6, 16)
@@ -613,3 +614,56 @@ def test_beam_spec_round_trips_to_run_gibbs_flags():
     assert flags[flags.index('--beam-fwhm') + 1] == repr(0.6)
     assert flags[flags.index('--beam-nu-ref') + 1] == repr(float(FREQS[0]))
     assert beam_run_args(dict(table='t.npz')) == ['--beam-table', 't.npz']
+
+
+# ---------------------------------------------------------------------------
+# Projecting B Uf out of a systematic template (the smooth ground spill)
+# ---------------------------------------------------------------------------
+
+def smooth_basis():
+    return groundspill_basis(FREQS, SHAPE, period=40.0, include_smooth=True)
+
+
+def test_project_out_beamed_leaves_nothing_b_uf_can_fit():
+    """The projected template has no part ``B Uf f`` can fit, and what was
+    removed is entirely such a part. Together: the model's span is the same
+    with the projected template as with the original."""
+    beam, evecs = chromatic(index=2.0), legendre_basis(SHAPE[2], N_MODES)
+    t = smooth_basis().cube(np.eye(1, smooth_basis().n_params).reshape(
+        smooth_basis().g_shape))
+    proj = project_out_beamed(t, beam.full_transfer(), evecs)
+    again = project_out_beamed(proj, beam.full_transfer(), evecs)
+    removed = project_out_beamed(t - proj, beam.full_transfer(), evecs)
+    assert np.abs(again - proj).max() < 1e-12 * np.abs(t).max()
+    assert np.abs(removed).max() < 1e-12 * np.abs(t).max()
+    # A chromatic beam makes the smooth template only nearly reproducible.
+    assert 0 < np.abs(proj).max() < 0.5 * np.abs(t).max()
+
+
+def test_project_out_beamed_skips_beam_killed_modes():
+    """Where the beam is zero, ``B Uf f`` fits nothing, so nothing may be
+    projected out there -- an arbitrary basis for the null space would be."""
+    evecs = legendre_basis(SHAPE[2], N_MODES)
+    transfer = np.zeros(SHAPE)
+    transfer[0, 0] = 1.0                                     # only k_perp = 0
+    t = np.random.default_rng(3).normal(size=SHAPE)
+    proj = project_out_beamed(t, transfer, evecs)
+    ft, fp = (np.fft.fft2(a, axes=(0, 1)) for a in (t, proj))
+    assert np.allclose(fp[1:], ft[1:]) and np.allclose(fp[0, 1:], ft[0, 1:])
+    assert np.allclose(fp[0, 0] @ evecs.T, 0, atol=1e-10)
+
+
+def test_beam_project_keeps_unselected_templates_and_is_a_true_basis():
+    beam, evecs = chromatic(index=2.0), legendre_basis(SHAPE[2], N_MODES)
+    sep = smooth_basis()
+    tb = beam_project(sep, beam.full_transfer(), evecs, rows=[0])
+    assert tb.g_shape == sep.g_shape and tb.n_params == sep.n_params
+    rng = np.random.default_rng(4)
+    g = rng.normal(size=sep.g_shape)
+    g_ripple = g.copy()
+    g_ripple[:, 0] = 0
+    assert np.allclose(tb.apply(g_ripple), sep.apply(g_ripple))
+    y = rng.normal(size=int(np.prod(SHAPE)))
+    assert np.isclose(tb.apply(g) @ y, (g * tb.adjoint(y)).sum(), rtol=1e-12)
+    explicit = np.array([tb.apply(e) for e in np.eye(tb.n_params)])
+    assert np.allclose(tb.gram(), explicit @ explicit.T)

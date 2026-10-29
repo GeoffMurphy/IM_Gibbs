@@ -54,7 +54,7 @@ from imgibbs import (                                          # noqa: E402
     Us, construct_A, construct_b, construct_preconditioner,
     bin_it, kbins_from_crop, survey_grid, data_path, load, load_l2021_cube,
     groundspill_basis, ripple_wavenumber, gaussian_beam, beam_fwhm,
-    load_beam_table, MaskedForegroundBlock,
+    load_beam_table, MaskedForegroundBlock, beam_project,
     signal_covariance_sampler as SCS,
     foreground_covariance_sampler as FCS,
 )
@@ -399,6 +399,15 @@ def main():
     else:
         beam = None
 
+    # The smooth spill template is almost reproducible by B Uf f; left as it
+    # is, the solver barely moves its amplitude (docs/STATUS.md, finding 9 of
+    # 'The beam in the MODEL'). Projecting that part out leaves what the
+    # model can fit unchanged and removes the near-null direction.
+    if gs_smooth and beam is not None:
+        sys_basis = beam_project(sys_basis, beam.full_transfer(), evecs,
+                                 rows=[0])
+        print('               smooth templates: B Uf projected out')
+
     # Collapsed S step. Modes the beam has removed carry (almost) no
     # information about S; drawing S from them as well lets S re-estimate
     # itself from its own prior draws -- a near random walk. Instead draw S
@@ -507,6 +516,8 @@ def main():
                    'gs_prior_K': args.gs_prior if args.groundspill else None,
                    'gs_deflate': bool(args.groundspill and args.gs_deflate),
                    'gs_smooth': bool(args.groundspill and gs_smooth),
+                   'gs_smooth_projected': bool(args.groundspill and gs_smooth
+                                               and beam is not None),
                    'gs_smooth_prior_K': (args.gs_smooth_prior
                                          if args.groundspill and gs_smooth
                                          else None),

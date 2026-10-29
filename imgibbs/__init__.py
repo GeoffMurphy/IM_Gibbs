@@ -23,7 +23,8 @@ from .kbins import (
 )
 from .systematics import (
     C_M_MHZ, ENVELOPE_INDEX, RIPPLE_PERIOD_MHZ, RM_DEFAULT, T_GROUND,
-    SystematicBasis, best_fit_amplitudes, deflate_foreground,
+    SystematicBasis, TemplateBasis, beam_project, best_fit_amplitudes,
+    deflate_foreground, project_out_beamed,
     faraday_templates, groundspill_basis,
     groundspill_cube, lambda_squared, leakage_basis, onef_basis,
     onef_covariance, period_scan, poly2d_templates, realise, ripple_wavenumber,
@@ -55,7 +56,8 @@ __all__ = [
     'Us', 'Uf', 'construct_Uf', 'construct_A', 'construct_b',
     'construct_preconditioner', 'MaskedForegroundBlock',
     'signal_covariance_sampler', 'foreground_covariance_sampler',
-    'SystematicBasis', 'groundspill_basis', 'groundspill_cube',
+    'SystematicBasis', 'TemplateBasis', 'beam_project',
+    'project_out_beamed', 'groundspill_basis', 'groundspill_cube',
     'spectral_templates', 'scan_templates', 'spillover_envelope',
     'ripple_wavenumber', 'period_scan',
     'T_GROUND', 'RIPPLE_PERIOD_MHZ', 'ENVELOPE_INDEX',
