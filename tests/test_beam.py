@@ -28,6 +28,7 @@ from imgibbs import (
     FWHM_TO_SIGMA, Beam, beam_fwhm, chromatic_leakage, construct_A,
     construct_b, construct_preconditioner, gaussian_beam, groundspill_basis,
     beam_project, project_out_beamed, MarginalNoise, Us, Uf,
+    rfft_adjoint_weight,
 )
 
 SHAPE = (8, 6, 16)
@@ -755,3 +756,38 @@ def test_marginal_solve_matches_the_joint_solve():
 
     assert np.allclose(x_marg, x_joint[:n_sf], rtol=1e-8, atol=1e-10)
     assert np.allclose(g.ravel(), x_joint[n_sf:], rtol=1e-8, atol=1e-10)
+
+
+def test_marginal_preconditioner_is_exact_given_the_exact_A0_inverse():
+    """Woodbury on the preconditioner: with ``M1 = A0^-1`` (plain ``W``
+    weights), the corrected operator must be the exact inverse of the
+    marginal system."""
+    nx, ny, nz = SHAPE
+    rng = np.random.default_rng(10)
+    beam = chromatic(index=2.0)
+    basis = smooth_basis()
+    evecs = legendre_basis(nz, N_MODES)
+    S = np.abs(rng.normal(size=nx * ny * nz)) + 1.0
+    F = np.abs(rng.normal(size=N_MODES)) + 1.0
+    G = rng.uniform(0.5, 2.0, basis.n_params)
+    W = masked_weights()
+    w = (W > 0).astype(float)
+    rl, rs = nx * ny * (nz // 2 + 1), (nx, ny, nz // 2 + 1)
+    fl, fs = nx * ny * N_MODES, (nx, ny, N_MODES)
+    n = 2 * rl + fl
+
+    def dense(Nw):
+        return np.array([construct_A(np.eye(n)[i], S, Nw, F, w, evecs, rl, rs,
+                                     fl, fs, SHAPE, beam=beam)
+                         for i in range(n)]).T
+
+    mn = MarginalNoise(W, basis, G)
+    A0_inv = np.linalg.inv(dense(W))
+    C = np.array([construct_b(S, 2.0, F, w, np.zeros(rs), np.zeros(fs),
+                              evecs, np.zeros(SHAPE), np.zeros(rl),
+                              np.zeros(fs), np.zeros(W.size), SHAPE,
+                              beam=beam, weighted_data=row)
+                  for row in mn.WU])
+    M = mn.preconditioner(lambda r: A0_inv @ r, C, rfft_adjoint_weight(rs, fl))
+    r = rng.normal(size=n)
+    assert np.allclose(M(r), np.linalg.solve(dense(mn), r), rtol=1e-7)

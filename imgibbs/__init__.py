@@ -37,7 +37,7 @@ from .beam import (
     beam_run_args,
 )
 from .linear_system import (
-    MaskedForegroundBlock, MarginalNoise,
+    MaskedForegroundBlock, MarginalNoise, rfft_adjoint_weight,
     Uf,
     Us,
     construct_A,
@@ -55,6 +55,7 @@ __all__ = [
     'power_spectrum',
     'Us', 'Uf', 'construct_Uf', 'construct_A', 'construct_b',
     'construct_preconditioner', 'MaskedForegroundBlock', 'MarginalNoise',
+    'rfft_adjoint_weight',
     'signal_covariance_sampler', 'foreground_covariance_sampler',
     'SystematicBasis', 'TemplateBasis', 'beam_project',
     'project_out_beamed', 'groundspill_basis', 'groundspill_cube',

@@ -55,6 +55,7 @@ from imgibbs import (                                          # noqa: E402
     bin_it, kbins_from_crop, survey_grid, data_path, load, load_l2021_cube,
     groundspill_basis, ripple_wavenumber, gaussian_beam, beam_fwhm,
     load_beam_table, MaskedForegroundBlock, MarginalNoise, Uf, beam_project,
+    rfft_adjoint_weight,
     signal_covariance_sampler as SCS,
     foreground_covariance_sampler as FCS,
 )
@@ -518,6 +519,18 @@ def main():
                                              f_shape, shape,
                                              sys_basis=solve_basis, G=G,
                                              beam=beam, fg_block=fg_block)
+    if marg is not None:
+        # The marginal system is A0 minus a rank-n_params term that the
+        # preconditioner above does not see; correct it by Woodbury. The
+        # coupling rows A_x^T W Ug e_i do not depend on S or F.
+        zero_s, zero_f = np.zeros(rfft_shape), np.zeros(f_shape)
+        C_marg = np.array([
+            construct_b(S, N_inv, F, w, zero_s, zero_f, evecs, data_cube,
+                        np.zeros(rfft_len), zero_f, np.zeros(w.size), shape,
+                        beam=beam, weighted_data=row)
+            for row in marg.WU])
+        w_adj = rfft_adjoint_weight(rfft_shape, f_len)
+        precond_apply = marg.preconditioner(precond_apply, C_marg, w_adj)
 
     # ------------------------------------------------------------------
     # Sampling
@@ -674,6 +687,8 @@ def main():
                                                  f_shape, shape,
                                                  sys_basis=solve_basis, G=G,
                                                  beam=beam, fg_block=fg_block)
+        if marg is not None:
+            precond_apply = marg.preconditioner(precond_apply, C_marg, w_adj)
         gc.collect()
 
     np.save(os.path.join(args.out, f'matvecs{suffix}.npy'), np.array(matvecs))

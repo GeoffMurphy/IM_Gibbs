@@ -564,6 +564,45 @@ class MarginalNoise:
              - np.asarray(wg).ravel() / np.sqrt(self.G))
         return z - self.WU.T @ self._solve_P(v)
 
+    def preconditioner(self, M1_apply, C, adjoint_weight):
+        """Correct a preconditioner for the rank-``n_params`` update.
+
+        With ``g`` integrated out, ``A = A0 - C P^-1 (w C)^T``, where ``A0``
+        is the system with plain ``W`` weights -- what ``M1_apply`` (from
+        :func:`construct_preconditioner`) approximates the inverse of. ``C``
+        has rows ``A_x^T W Ug e_i`` as :func:`construct_b` forms them
+        (``A_x`` the model operator on ``(s, f)``). The packed real FFT
+        makes ``A`` non-symmetric: the true adjoint of the ``s`` block counts
+        every ``k_z`` strictly between the DC and Nyquist planes twice, and
+        ``w = adjoint_weight`` carries that factor (see
+        :func:`rfft_adjoint_weight`).
+
+        ``M1`` alone leaves ``n_params`` directions with near-zero
+        eigenvalues, which a warm-started solve does not resolve. Woodbury
+        applied to ``M1`` cancels them::
+
+            M^-1 r = u + Y K^-1 (w C) u,   u = M1 r,  Y = M1 C^T,
+            K = P - (w C) Y
+
+        exact when ``M1 = A0^-1``.
+
+        Parameters
+        ----------
+        M1_apply : callable
+            Approximation to ``A0^-1``.
+        C : array, shape (n_params, len(x))
+            Rows ``A_x^T W Ug e_i``; independent of ``S`` and ``F``.
+        adjoint_weight : array, length len(x)
+        """
+        CR = C * adjoint_weight
+        Y = np.array([M1_apply(c) for c in C])
+        K = self.P - CR @ Y.T
+
+        def apply(r):
+            u = M1_apply(r)
+            return u + Y.T @ np.linalg.solve(K, CR @ u)
+        return apply
+
     def draw(self, resid, eta):
         """A draw of ``g | s, f, d``: ``N(P^-1 Ug^T W resid, P^-1)``.
 
@@ -574,3 +613,20 @@ class MarginalNoise:
         mean = self._solve_P(self.WU @ np.asarray(resid).ravel())
         g = mean + np.linalg.solve(self.chol.T, np.asarray(eta).ravel())
         return g.reshape(self.basis.g_shape)
+
+
+def rfft_adjoint_weight(rfft_shape, f_len):
+    """Weights turning the packed ``rfftn`` rows into true adjoint rows.
+
+    ``x`` packs ``s`` as the real and imaginary parts of its half spectrum.
+    Every ``k_z`` strictly between the DC and Nyquist planes stands for
+    itself and its mirror, so the adjoint of ``irfftn`` in that packing is
+    ``rfftn`` times 2 there and times 1 on the two edge planes (only DC when
+    ``Nz`` is odd). The foreground block is unweighted.
+    """
+    nzh = rfft_shape[2]
+    c = np.full(rfft_shape, 2.0)
+    c[:, :, 0] = 1.0
+    # irfftn's default length is 2 * (nzh - 1): an even Nz with a Nyquist plane.
+    c[:, :, -1] = 1.0
+    return np.concatenate([c.ravel(), c.ravel(), np.ones(f_len)])
