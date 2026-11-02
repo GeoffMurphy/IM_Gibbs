@@ -137,8 +137,8 @@ def parse_args():
         'Add a systematic block for a standing-wave ripple. Without a beam '
         'the SMOOTH part of ground spill does not need modelling -- the '
         'foreground block absorbs it completely (see imgibbs/systematics.py). '
-        'With a beam it does: spill is not beamed, the foreground model is '
-        '(see --gs-smooth).')
+        'With a beam it does: spill is not beamed but the foreground model '
+        'is, so B Uf f cannot absorb it (see --gs-smooth and --gs-solve).')
     g.add_argument('--groundspill', action='store_true',
                    help='sample a ground-spill systematic jointly with s and f')
     g.add_argument('--gs-period', type=float, default=17.5,

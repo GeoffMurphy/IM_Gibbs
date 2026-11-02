@@ -1458,6 +1458,23 @@ beam on H I and foreground, plus an unbeamed ground-spill term (spill level
 | beam + ground-spill block, deflated (`--gs-deflate`) | **24 ± 2.6** | 1.39 ± 0.12 | 0.91 ± 0.06 | (not comparable) |
 | ground-spill block, no beam | **14.5 ± 0.9** | 0.38 | 0.010 | 0.60 ± 0.01 |
 | beam + ground-spill block + smooth template (`--gs-smooth`) | **16 ± 1.7** | 1.36 ± 0.11 | 0.89 ± 0.05 | 1.09 ± 0.01 |
+| ... + smooth template with `B Uf` projected out | **22 ± 2.6** | 1.34 ± 0.10 | 0.89 ± 0.05 | 1.11 ± 0.02 |
+| ... + smooth template, `g` marginalised, old preconditioner | **10.6 ± 2.9** (drift 0.66) | 1.35 ± 0.09 | 0.92 ± 0.05 | 1.06 ± 0.02 |
+| ... + smooth template, `g` marginalised (`--gs-solve marginal`, the default with a beam) | **0.99 ± 0.16** | 1.15 ± 0.08 | 0.91 ± 0.05 | 1.00 ± 0.005 |
+| *for reference: the same beam, no ground spill (finding 7)* | *0.97 ± 0.14* | *1.12 ± 0.08* | *0.88 ± 0.05* | — |
+
+**Fixed (2026-11-02): marginalise `g`, and correct the preconditioner for
+it.** With both, the run matches the no-spill run to within its error bars
+in bins 0-2. The truth cross-correlation agrees too: 0.24 / 0.51 / 0.43
+against 0.27 / 0.50 / 0.43 without spill, in modes with `|B|^2 >= 0.5`. All six
+spill amplitudes come back. The smooth gradient is 0.4987 ± 0.0015
+(truth 0.4975), the ripple's constant term 9.55e-4 (truth 9.58e-4) and its
+gradient 2.84e-4 (truth 2.87e-4). The `sin` terms are 0 within 1 sigma. The
+smooth constant term comes out at 0.34 against 1.66. At `k_perp = 0` it is
+exactly degenerate with `f`, so only their sum is determined, and it does not
+touch `s`. Solves average 88 matvecs, against 83 for the
+uncorrected marginal solve and 69 for the joint one. The bullets below are
+the route there.
 
 **The cause: the smooth spill, not the ripple.** The mock's spill is 0.5 K
 of smooth spillover plus the 1 mK ripple, and it enters *after* the beam
@@ -1484,7 +1501,7 @@ both are negligible, so the single template was kept.
 - **Deflation cannot fix this and did not** (24x against 22x). It removes
   the smooth part from the `g` templates, which is the opposite of what is
   needed.
-- **Candidate fix: `run_gibbs.py --gs-smooth`** (default `auto`: on when a
+- **Part of the fix: `run_gibbs.py --gs-smooth`** (default `auto`: on when a
   beam is modelled). It adds the envelope as a spectral template for each spatial
   term, with its own prior, `--gs-smooth-prior` (default 10 K; spill is ~0.5
   K, and the ripple prior of 1e-2 K would pin it to zero). It refuses
@@ -1520,12 +1537,30 @@ both are negligible, so the single template was kept.
   ripple's own gradient term shows the same thing in every run so far:
   5.6e-4 against a truth of 2.9e-4, still rising. The block-diagonal
   preconditioner has no `g`-`s` coupling, and a warm-started solve at rtol
-  1e-6 of `||b||` stops before it resolves the direction. Candidate fix
-  (not implemented): marginalise `g` analytically, i.e. solve for `(s, f)`
-  with noise `N + Ug G Ug^T` (a rank-6 Woodbury update to `w N^-1`), then
-  draw `g | s, f, d` exactly. That is the same joint posterior, and the
-  near-null direction becomes six outlying eigenvalues, which a Krylov
-  solver handles in a few extra iterations.
+  1e-6 of `||b||` stops before it resolves the direction.
+- **Marginalising `g` is the other part, `--gs-solve marginal`** (commit
+  dcc68a4; default `auto`, which picks it when a beam is modelled). The `(s, f)` system
+  is solved with noise `N + Ug G Ug^T`, applied through a rank-6 Woodbury
+  update to `w N^-1` (`linear_system.MarginalNoise`), and then `g | s, f, d`
+  is drawn exactly. It is the same joint posterior, and the tests check that
+  it reproduces the joint solve. The projection is then unnecessary, and is
+  only applied with `--gs-solve joint`.
+- **On its own it got bin 0 to 10.6x, still drifting** (2026-10-31). The
+  smooth gradient crept from 0.072 to 0.115 over 1500 samples. Reproduced
+  locally to four digits on the L-band mock. A UHF-mock local test had
+  happened to converge. The cause is that the marginal system is
+  `A0 - C P^-1 (wC)^T`, the old system minus a rank-6 term, while the
+  preconditioner still approximated `A0`. The six directions that term
+  changes were barely preconditioned, so the solver met its tolerance before
+  resolving them. The near-null direction had moved, not gone.
+- **The fix is a Woodbury correction to the preconditioner** (commit dcc68a4):
+  `M^-1 r = u + Y K^-1 (wC) u`, with `u = M1 r`, `Y = M1 C^T` and
+  `K = P - (wC) Y`. It is exact whenever `M1` is exactly `A0^-1`, which a test
+  checks. One subtlety: `s` is stored as a packed real FFT, whose true
+  adjoint weights the interior `k_z` planes by 2 (`rfft_adjoint_weight`). So
+  `A` is not symmetric (see "`construct_A` is not symmetric" above), and the
+  correction needs that weight. Locally the smooth gradient was right from the
+  first sample (0.498-0.501), and the full run is the last table row.
 - **The spatial shape still has to be right.** The smooth template
   inherits the ripple block's spatial terms (constant + scan gradient,
   `--gs-order`). Real spill varies with elevation and azimuth; a mock whose
