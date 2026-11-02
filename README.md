@@ -37,7 +37,7 @@ This version runs on the **real MeerKLASS L2021 footprint** — a non-cubic
 an irregular survey mask. Earlier work used a cubic 72³ slice.
 
 > **Looking for the paper?** The example notebook and cubic-grid sampler behind
-> Murphy et al. ([arXiv:2604.26890](https://arxiv.org/abs/2604.26890)) are
+> [Murphy et al. (2026)](https://scixplorer.org/abs/2026MNRAS.551g1503M/abstract) are
 > tagged [`v1-paper`](../../tree/v1-paper). This branch has moved on
 > considerably.
 
@@ -349,8 +349,7 @@ Read it before trusting a number out of this repository.
 
 ## Citation
 
-If you use this code, please cite Murphy et al.,
-[arXiv:2604.26890](https://arxiv.org/abs/2604.26890).
+If you use this code, please cite [Murphy et al. (2026)](https://scixplorer.org/abs/2026MNRAS.551g1503M/abstract).
 
 ## Licence
 
