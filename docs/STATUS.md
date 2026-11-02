@@ -1102,7 +1102,7 @@ optional.
 
 **4. Known-answer injection test — and the chains start at the answer.**
 (`scripts/beam_injection.py`, `submit_beam_injection.sh`; ilifu,
-`~/imgibbs-beam`, outputs in `/scratch3/users/geoffmurphy/beam_injection`;
+`~/imgibbs-beam`, outputs in scratch;
 these runs used the measured UHF beam, while the scripts default to a
 Gaussian.) Mock: simulated H I (0.86 mK rms) + the real cube's 6-mode
 Legendre foreground (0.12 K rms) convolved with the beam, real mask, sampler
@@ -1569,7 +1569,7 @@ both are negligible, so the single template was kept.
 
 **Related but separate work — check before extending this.** Geoff's
 observational run (`Sampling Nb/`, `make_beam_transfer.py`) builds its
-transfer from the same L-band 1-D profiles: its `beam_transfer_L2021.npz`
+transfer from the same L-band 1-D profiles, and its transfer table
 matches `build_beam_table.py`'s output to 5e-5, so the two agree. The MSc
 student's beam (added on ilifu since 2026-09-13) is a separate, unsampled
 implementation in her own project. Decided 2026-11-02: it stays there, and
