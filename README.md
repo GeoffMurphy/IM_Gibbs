@@ -17,13 +17,20 @@ Optionally a fourth component `g`, an instrumental systematic on a fixed
 low-rank basis with a fixed prior, sampled in the same solve:
 `(s, f, g) | S, F, d`. See [Systematics](#systematics).
 
+Optionally a chromatic primary beam `B` on the sky (signal and foreground, not
+the systematic): `d = w (B Us s + B Uf f + Ug g) + n`. See [Beam](#beam).
+
 Foregrounds are marginalised over rather than projected out. Measured against a
 PCA clean on the same cube, k-bins, estimator and truth, the sampler retains
 substantially more signal at intermediate k — 0.86 against 0.46 at
 k = 0.37 Mpc⁻¹, 0.99 against 0.71 at k = 0.87 — so that loss does not have to
 be corrected for after the fact. **At the lowest bin the two are equivalent**
-(0.13 against 0.16): both lose ~85%, and marginalising does not rescue it. See
-`docs/STATUS.md`.
+(0.13 against 0.16): both lose ~85%. That is because the foreground prior is
+centred on the data's own projection and its variance is sampled about that
+centre, so it collapses and pins the foreground to the data, which at the
+lowest k amounts to a projection. Centring it on zero instead
+(`--f-prior-mean zero`) leaks foreground into the signal there. See
+`docs/STATUS.md`, "The beam in the MODEL", finding 4.
 
 This version runs on the **real MeerKLASS L2021 footprint** — a non-cubic
 (70, 45, 250) grid with strongly anisotropic voxels (~8.6 x 8.6 x 1.0 Mpc) and
@@ -163,6 +170,18 @@ using it.
 foreground block has per-pixel free amplitudes on `n_modes` smooth frequency
 modes, so a smooth spillover envelope lies inside its span to machine precision
 at any `n_modes`. Inject 0.5 K of it — 600x the H I rms — and nothing moves.
+**Not under a beam.** Spill is far-sidelobe pickup, so it is not convolved
+with the main beam, but the beamed foreground model is `B Uf f`, which cannot
+fit an unbeamed smooth term: the same 0.5 K put 22x the H I power into the
+lowest bin. So with a beam the ground-spill block also carries one unbeamed
+smooth template per spatial term (`--gs-smooth`, on by default when a beam is
+modelled, with its own wide prior `--gs-smooth-prior`). That template is nearly
+degenerate with `B Uf f` and `B Us s`, which stalls the joint solve. So with a
+beam the block is integrated out of the linear solve and its amplitudes are
+drawn afterwards, exactly (`--gs-solve marginal`, also the default with a beam).
+On an L-band known-answer test this brings bin 0 from 22x back to 0.99 ± 0.16,
+the same as without spill (`docs/STATUS.md`, finding 9 of "The beam in the
+MODEL").
 
 **The standing-wave ripple is the part that matters.** It is a single
 `k_parallel` mode at `k = 2*pi*B/(Lz*P)`, so all of its power lands in one
@@ -200,6 +219,68 @@ running the sampler.
 `sys_basis=None` is the default throughout, so the three-block sampler is
 unchanged.
 
+### Beam
+
+```bash
+python scripts/run_gibbs.py 6 --beam-fwhm 1.5 --beam-index 1
+```
+
+convolves the signal and foreground, not the systematic, with a chromatic
+Gaussian beam, channel by channel (`imgibbs/beam.py`). `S` is then the power
+spectrum of the unconvolved sky. With no beam option the sampler is
+unchanged.
+
+**Choosing the beam.** No beam model is distributed here; for real data,
+use the measured beam for your band (see the warning below):
+
+| option | beam |
+|---|---|
+| *(none)* | no beam |
+| `--beam-fwhm DEG [--beam-index N] [--beam-nu-ref MHz]` | Gaussian, `FWHM(nu) = DEG (nu_ref/nu)^N` — for mocks made with the same Gaussian |
+| `--beam-table FILE` | a measured beam, in any of three layouts, detected automatically: |
+| | a radial table `B(\|k_perp\|, nu)` (`.npz`: `k`, `freq_MHz`, `transfer`) |
+| | a transfer already on this map's grid (`.npz`: `beam` of shape `(Nx, Ny, n_freq)`, optional `freqs`) — any point-symmetric beam, including elliptical ones |
+| | a pickle of azimuthally averaged power profiles (`freq`, `th`, `P_v_th`, `P_h_th`) |
+| `--beam-width-scale X` | with either of the above: stretch the beam by `X` in angle (tests only) |
+
+`scripts/build_beam_table.py` reduces a full Jones beam model (several GB)
+or a profile pickle to a radial table. `scripts/build_beam_grid.py`
+transforms a 2D Jones pattern onto the grid, keeping its ellipticity.
+
+Three things change with a beam, and all are on by default:
+
+- **The `S` step is collapsed.** `S` is drawn from the Fourier modes the beam
+  leaves visible (`--beam-threshold`), and the rest are marginalised. Valid,
+  but the injection test shows no measurable benefit so far.
+- **The foreground block of the preconditioner is exact.** With the real
+  mask it covers the stiff low-order modes (`--fg-dense-modes`), at about
+  1.4 GB of memory. Without it LGMRES does not converge in useful time.
+- **The foreground prior is centred on zero** (`--f-prior-mean auto`), not
+  on the data's projection, which is already beamed and would be beamed
+  twice by the model. The beamless default is unchanged.
+
+A beamed sample takes ~9 s on a laptop. A smooth Gaussian leaks almost no
+foreground, but a measured MeerKAT beam's spectral ripple pushed ~0.4 mK
+(about half the HI rms) outside the foreground basis at the 17.4 MHz
+standing-wave period, and leaving the beam out of the model put that into the
+lowest k-bin.
+
+**Do not model a real MeerKAT beam with a Gaussian.** On a mock made with a
+measured MeerKAT beam, a Gaussian model beam, even one matched to the
+measured FWHM and chromatic index, put 114x the true power into the lowest
+k-bin and 5x into the next. Leaving the beam out entirely gave 15x. The
+Gaussian examples here are for mocks made with the same Gaussian. On real
+data the model needs the beam's spectral structure, from a measured
+`--beam-table` for the right band. Getting its width 2% wrong did no
+measurable harm, but a measured beam from the wrong band (UHF on an L-band
+mock) still gave 4x in the lowest bin. `scripts/beam_injection.py` and
+`submit_beam_injection.sh` run the known-answer test. **Caveat:** the shipped
+`S_starting_point` is the power of the same simulated HI the mocks inject, so
+chains start at the answer; start with `--S-start-scale` (e.g. 0.1 and 10)
+and trust only the bins where both ends converge. On the injection mock that
+is bins 0–3 without a beam and bins 0–2 with one; the top bin is prior in
+both. See `docs/STATUS.md`, "The beam in the MODEL".
+
 ### Disk
 
 `x_sample` traces are ~13 MB each, so a 500-sample chain is ~6.5 GB. `S` is
@@ -219,6 +300,7 @@ imgibbs/
   linear_system.py  A, b, and the block-diagonal preconditioner
   covariance.py     the inverse-gamma and inverse-Wishart draws
   systematics.py    instrumental systematics: the ground-spill block
+  beam.py           chromatic primary beam B on the sky, Gaussian or measured
   data.py           locating the input cubes
 notebooks/
   1_generate_signal_cube.ipynb     simulated H I cube + S starting point
@@ -230,9 +312,13 @@ scripts/
   systematics_injection.py  systematics injection test, known answer
   systematics_report.py     tables and figures from a finished injection run
   pca_benchmark.py          PCA + transfer function, on the sampler's k-bins
+  build_beam_table.py       tabulate a primary-beam model for --beam-table
+  beam_injection.py         beam known-answer test: mocks and summary
+  fg_precond_spectrum.py    preconditioner spectra on a sub-box of the mask
+  submit_beam_injection.sh  SLURM wrapper, one job per beam arm
   submit_gibbs.sh           SLURM wrapper
   submit_systematics.sh     SLURM wrapper, one job per arm
-tests/              regression tests on the geometry, binning and systematics
+tests/              regression tests on the geometry, binning, systematics and beam
 docs/STATUS.md      what is settled, what is open, what is known to be wrong
 ```
 

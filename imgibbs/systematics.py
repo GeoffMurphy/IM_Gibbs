@@ -36,7 +36,10 @@ Two things follow, and they set the whole design of this module.
 **The smooth part of ground spill is not identifiable, and does not need to
 be.** It is absorbed to machine precision at any ``n_modes``. Putting a smooth
 template in ``Ug`` would only make the system rank-deficient against ``Uf``.
-:func:`spectral_templates` therefore omits it by default.
+:func:`spectral_templates` therefore omits it by default. **This changes
+under a beam:** spill is not beamed, the foreground model ``B Uf f`` is, and
+the smooth spill is then neither absorbed nor degenerate -- include it
+(``include_smooth=True``; ``run_gibbs.py --gs-smooth``).
 
 **The ripple is identifiable, and it lands where it hurts.** A ripple of
 period ``P`` MHz is a pure ``k_parallel`` mode at ``k = 2*pi*B/(Lz*P)``; on the
@@ -203,10 +206,12 @@ def spectral_templates(freqs, period=RIPPLE_PERIOD_MHZ, n_harmonics=1,
     beta : float
         Index of the envelope multiplying the ripple.
     include_smooth : bool
-        Add the bare envelope as a template. **Off by default and you almost
-        certainly want it off**: it is degenerate with the foreground block to
+        Add the bare envelope as a template. **Off by default, and without a
+        beam you want it off**: it is degenerate with the foreground block to
         machine precision, so including it adds a null direction that only the
-        prior on ``G`` regularises.
+        prior on ``G`` regularises. **With a beam you want it on**: the spill
+        is not beamed but the foreground model is, so ``B Uf f`` cannot fit
+        the smooth spill (``run_gibbs.py --gs-smooth``).
 
     Returns
     -------
@@ -417,6 +422,114 @@ class SystematicBasis:
     def cube(self, g):
         """``Ug g`` reshaped back to ``(Nx, Ny, Nz)``, for plotting."""
         return self.apply(g).reshape(self.shape)
+
+
+@dataclass(frozen=True)
+class TemplateBasis:
+    """A systematic basis held as explicit template cubes.
+
+    For templates that are not separable, which :func:`beam_project` makes.
+    It has the interface :class:`SystematicBasis` presents to the solver, and
+    keeps the ``g_shape`` (and ``n_s``, ``n_t``) of the basis it came from, so
+    amplitude arrays are laid out the same way.
+
+    Attributes
+    ----------
+    templates : array, shape (n_params, Nx*Ny*Nz)
+        One flattened cube per amplitude, in ``g.ravel()`` order.
+    shape : tuple (Nx, Ny, Nz)
+    g_shape : tuple
+    """
+    templates: np.ndarray
+    shape: tuple
+    g_shape: tuple
+
+    @property
+    def n_s(self):
+        return self.g_shape[0]
+
+    @property
+    def n_t(self):
+        return self.g_shape[1]
+
+    @property
+    def n_params(self):
+        return self.templates.shape[0]
+
+    def apply(self, g):
+        return np.asarray(g).ravel() @ self.templates
+
+    def adjoint(self, y):
+        return (self.templates @ np.asarray(y).ravel()).reshape(self.g_shape)
+
+    def gram(self):
+        return self.templates @ self.templates.T
+
+    def cube(self, g):
+        return self.apply(g).reshape(self.shape)
+
+
+def project_out_beamed(cube, transfer, fg_basis, min_transfer=1e-3):
+    """Remove from ``cube`` the part ``B Uf f`` can fit, at every ``k_perp``.
+
+    ``B`` is diagonal in ``(k_perp, nu)``, so ``B Uf f`` spans, at each
+    transverse wavenumber, the columns of ``B(k_perp, nu) Uf(nu)``; this
+    subtracts the least-squares fit onto them (unweighted, on the full grid).
+    Columns whose singular value is below ``min_transfer`` are left alone:
+    where the beam has removed the sky, ``B Uf f`` can fit nothing, and an
+    arbitrary basis for that null space must not be projected out.
+
+    Parameters
+    ----------
+    cube : array (Nx, Ny, Nz)
+    transfer : array (Nx, Ny, Nz)
+        ``B`` on the full transverse grid (``Beam.full_transfer()``).
+    fg_basis : array (n_modes, Nz), orthonormal rows
+    """
+    c = np.fft.fft2(np.asarray(cube, dtype=float), axes=(0, 1))
+    A = transfer[..., None] * np.asarray(fg_basis).T            # (nx,ny,nz,m)
+    Uv, sv, _ = np.linalg.svd(A, full_matrices=False)
+    Uv = Uv * (sv > min_transfer)[..., None, :]
+    c = c - np.einsum('ijfm,ijm->ijf', Uv,
+                      np.einsum('ijfm,ijf->ijm', Uv, c))
+    return np.fft.ifft2(c, axes=(0, 1)).real
+
+
+def beam_project(basis, transfer, fg_basis, rows, min_transfer=1e-3):
+    """``basis`` with ``B Uf`` projected out of its spectral ``rows``.
+
+    A template that ``B Uf f`` can almost reproduce leaves a near-null
+    direction in the solve: the data fix only the small part ``B Uf f``
+    cannot fit, and the solver barely moves the amplitude (STATUS.md,
+    finding 9 of "The beam in the MODEL", the smooth ground spill). Removing
+    the reproducible part from the template removes the direction without
+    changing what the model can fit: the removed part lies in the span of
+    ``B Uf`` by construction, so ``f`` takes it instead. Amplitudes keep
+    their meaning in K -- a component ``c x template`` is still fitted by
+    ``g = c``.
+
+    Parameters
+    ----------
+    basis : SystematicBasis
+    transfer, fg_basis, min_transfer :
+        As :func:`project_out_beamed`.
+    rows : sequence of int
+        Spectral template indices to project (e.g. ``[0]``, the smooth
+        template when ``include_smooth`` is set).
+
+    Returns
+    -------
+    TemplateBasis
+    """
+    eye = np.eye(basis.n_params).reshape((basis.n_params,) + basis.g_shape)
+    out = []
+    for e in eye:
+        t = basis.cube(e)
+        if np.flatnonzero(e.sum(axis=0))[0] in rows:
+            t = project_out_beamed(t, transfer, fg_basis, min_transfer)
+        out.append(t.ravel())
+    return TemplateBasis(templates=np.array(out), shape=basis.shape,
+                         g_shape=basis.g_shape)
 
 
 def groundspill_basis(freqs, shape, period=RIPPLE_PERIOD_MHZ, n_harmonics=1,

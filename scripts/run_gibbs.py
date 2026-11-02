@@ -18,6 +18,20 @@ signal and the foreground::
 
 That writes a ``g_trace`` alongside the others. To see what it buys on data
 with a known answer, run ``scripts/systematics_injection.py`` instead.
+
+Add ``--beam-fwhm`` to put a chromatic Gaussian primary beam on the sky
+(signal and foreground, not the systematic)::
+
+    python scripts/run_gibbs.py 6 --beam-fwhm 1.5 --beam-nu-ref 1000
+
+or any tabulated ``B(|k_perp|, nu)`` (format: ``imgibbs.load_beam_table``)::
+
+    python scripts/run_gibbs.py 6 --beam-table my_beam_table.npz
+
+``S`` is then the power spectrum of the *unconvolved* sky. With a beam the
+``S`` step is collapsed: ``S`` is drawn from the Fourier modes the beam
+leaves visible (``--beam-threshold``) and the rest are marginalised, rather
+than letting ``S`` re-estimate itself from modes the data never saw.
 """
 
 from __future__ import annotations
@@ -39,7 +53,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from imgibbs import (                                          # noqa: E402
     Us, construct_A, construct_b, construct_preconditioner,
     bin_it, kbins_from_crop, survey_grid, data_path, load, load_l2021_cube,
-    groundspill_basis, ripple_wavenumber,
+    groundspill_basis, ripple_wavenumber, gaussian_beam, beam_fwhm,
+    load_beam_table, MaskedForegroundBlock, MarginalNoise, Uf, beam_project,
+    rfft_adjoint_weight,
     signal_covariance_sampler as SCS,
     foreground_covariance_sampler as FCS,
 )
@@ -75,13 +91,54 @@ def parse_args():
                    help='LGMRES relative tolerance (default: 1e-6)')
     p.add_argument('--seed', type=int, default=None,
                    help='numpy random seed, for reproducible chains')
+    p.add_argument('--data', default=None,
+                   help='sample this .npy cube instead of the L2021 data. It '
+                        'must already be cropped to CROP, in K, with flagged '
+                        'voxels at exactly 0 -- e.g. a mock from '
+                        'scripts/beam_injection.py.')
+    p.add_argument('--save-x-every', type=int, default=1,
+                   help='write the full x sample every N iterations '
+                        '(default 1). Each is ~13 MB; Pk/F/g traces are '
+                        'always written every iteration.')
+    p.add_argument('--S-start-scale', type=float, default=1.0,
+                   help='multiply the starting S by this (default 1). The '
+                        'shipped S_starting_point is the power of the same '
+                        'simulated H I the injection mocks use, so a chain '
+                        'started from it starts at the answer; start from '
+                        '0.1 and 10 to see whether the data, not the start, '
+                        'set the result.')
+    p.add_argument('--fix-S', action='store_true',
+                   help='DIAGNOSTIC, not an analysis. Hold S at its starting '
+                        'value (the true simulated H I power, times '
+                        '--S-start-scale) instead of sampling it, to separate '
+                        'what the S step does from what the foreground basis '
+                        'and the beam do. Pk_trace then records the binned '
+                        'power of the sampled signal field, the quantity the '
+                        'S draw would have used. Same as '
+                        'systematics_injection.py --fix-S.')
+    p.add_argument('--f-prior-mean', choices=('auto', 'data', 'zero'),
+                   default='auto',
+                   help="centre of the foreground prior. 'data' is the "
+                        "data's own projection onto the foreground basis; "
+                        "'zero' is zero. 'auto' (default) is 'data' without "
+                        "a beam, the published behaviour, and 'zero' with "
+                        "one, because under a beam the data's projection is "
+                        "already beamed and B Uf f_mean would beam it twice. "
+                        "Without a beam neither choice is right at the "
+                        "lowest k: F is sampled about this centre, so 'data' "
+                        "collapses F and projects the H I out, and 'zero' "
+                        "makes F as small as the H I in the high-order modes "
+                        "and leaks foreground into s. See docs/STATUS.md, "
+                        "finding 4 of 'The beam in the MODEL'.")
     p.add_argument('--no-flagging', action='store_true',
                    help='do not downweight flagged (zero) voxels')
     g = p.add_argument_group(
         'ground spill',
-        'Add a systematic block for a standing-wave ripple. The SMOOTH part '
-        'of ground spill is not modelled and does not need to be -- the '
-        'foreground block absorbs it completely (see imgibbs/systematics.py).')
+        'Add a systematic block for a standing-wave ripple. Without a beam '
+        'the SMOOTH part of ground spill does not need modelling -- the '
+        'foreground block absorbs it completely (see imgibbs/systematics.py). '
+        'With a beam it does: spill is not beamed but the foreground model '
+        'is, so B Uf f cannot absorb it (see --gs-smooth and --gs-solve).')
     g.add_argument('--groundspill', action='store_true',
                    help='sample a ground-spill systematic jointly with s and f')
     g.add_argument('--gs-period', type=float, default=17.5,
@@ -96,6 +153,39 @@ def parse_args():
                         '(default: 1, i.e. constant + gradient)')
     g.add_argument('--gs-scan-axis', type=int, default=0, choices=(0, 1),
                    help='map axis the telescope scanned along (default: 0, RA)')
+    g.add_argument('--gs-deflate', action='store_true',
+                   help='project the foreground span out of the ripple '
+                        'templates. The part of a template inside it is '
+                        'degenerate with f and only confuses the split; '
+                        'deflating took the beamless injection test from 15x '
+                        'to the control in the lowest bin (docs/STATUS.md). '
+                        'With a beam it made no difference (finding 9 of '
+                        "'The beam in the MODEL'), and it cannot be combined "
+                        'with --gs-smooth.')
+    g.add_argument('--gs-smooth', choices=('auto', 'on', 'off'),
+                   default='auto',
+                   help='add an unbeamed smooth template (the ripple envelope) '
+                        'per spatial term, for the smooth spill. auto (the '
+                        'default): on when a beam is modelled. The spill '
+                        'enters after the beam, so B Uf f cannot fit it; '
+                        'leaving it out put 22x the H I power into the lowest '
+                        'bin of the beamed injection test (docs/STATUS.md, '
+                        "finding 9 of 'The beam in the MODEL'). Without a "
+                        'beam it is degenerate with the foreground block.')
+    g.add_argument('--gs-solve', choices=('auto', 'joint', 'marginal'),
+                   default='auto',
+                   help='joint: sample g in the same solve as s and f. '
+                        'marginal: integrate g out of that solve (it becomes '
+                        'correlated noise, N + Ug G Ug^T) and draw it '
+                        'afterwards from g | s, f, d -- the same posterior. '
+                        'auto (the default): marginal when a beam is '
+                        'modelled, where the joint solve barely moves g '
+                        "(docs/STATUS.md, finding 9 of 'The beam in the "
+                        "MODEL').")
+    g.add_argument('--gs-smooth-prior', type=float, default=10.0,
+                   help='prior std on each smooth-spill amplitude, K '
+                        '(default: 10). Spill is ~0.5 K, far above the '
+                        'ripple, so it needs its own, much wider prior.')
     g.add_argument('--gs-prior', type=float, default=1e-2,
                    help='prior std on each ground-spill amplitude, K '
                         '(default: 1e-2). This is a PRIOR, not a sampled '
@@ -103,6 +193,55 @@ def parse_args():
                         'cannot be estimated from a single draw. Set it from '
                         'instrument characterisation, generously -- it is a '
                         'nuisance parameter being marginalised over.')
+    bm = p.add_argument_group(
+        'beam',
+        'Convolve the sky (signal and foreground) with a chromatic Gaussian '
+        'primary beam, FWHM(nu) = fwhm * (nu_ref/nu)^index. Off unless '
+        '--beam-fwhm is given. The systematic block stays outside the beam.')
+    bm.add_argument('--beam-table', default=None,
+                    help='a measured beam: a radial table from '
+                         'build_beam_table.py, a transfer already on this '
+                         "map's grid (.npz with 'beam' (Nx, Ny, n_freq)), or "
+                         'a pickle of azimuthal power profiles -- detected '
+                         'automatically (imgibbs.load_beam_table). Takes '
+                         'precedence over --beam-fwhm.')
+    bm.add_argument('--beam-width-scale', type=float, default=1.0,
+                    help='stretch the model beam by this factor in angle '
+                         '(default 1; 1.02 is 2%% wider), for --beam-table '
+                         'or --beam-fwhm. For testing how accurately the '
+                         'beam must be known.')
+    bm.add_argument('--beam-threshold', type=float, default=1e-3,
+                    help='band-averaged |B|^2 below which a Fourier mode is '
+                         'treated as invisible to the data and left out of '
+                         'the S draw (default 1e-3). The run prints how much '
+                         'information the excluded modes could still carry; '
+                         'keep it well below 1.')
+    bm.add_argument('--fg-dense-modes', type=int, default=3,
+                    help='foreground modes preconditioned exactly, with the '
+                         'mask, under the beam (default 3; 0 disables). '
+                         'Memory ~2 x (Npix * n)^2 doubles: 1.4 GB at 3.')
+    bm.add_argument('--fg-beam-groups', type=int, default=5,
+                    help='channel groups for the beam in that block '
+                         '(default 5)')
+    bm.add_argument('--fg-refresh', type=int, default=20,
+                    help='rebuild that block with the current F at least '
+                         'every N samples (default 20), and sooner whenever a '
+                         'solve takes over twice the matvecs of the first '
+                         'solve after the last rebuild -- F moves fast in '
+                         'burn-in, slowly after')
+    bm.add_argument('--no-collapse', action='store_true',
+                    help='draw S from every mode, as without a beam. For '
+                         'comparison only -- see docs/STATUS.md.')
+    bm.add_argument('--beam-fwhm', type=float, default=None,
+                    help='beam FWHM in degrees at --beam-nu-ref. Take it from '
+                         'a measured beam, not 1.22 lambda/D.')
+    bm.add_argument('--beam-nu-ref', type=float, default=None,
+                    help='reference frequency for --beam-fwhm, MHz '
+                         '(default: band centre)')
+    bm.add_argument('--beam-index', type=float, default=1.0,
+                    help='chromatic index (default: 1, diffraction scaling). '
+                         '0 gives an achromatic beam -- smoothing without '
+                         'mode mixing, useful as a control.')
     p.add_argument('--save-S', action='store_true',
                    help='also write the full S cube each iteration. S is '
                         'piecewise-constant over the k-bins, so Pk_trace plus '
@@ -160,7 +299,15 @@ def main():
     # ------------------------------------------------------------------
     # Data and geometry
     # ------------------------------------------------------------------
-    data_cube = load_l2021_cube()[CROP]
+    if args.data is None:
+        data_cube = load_l2021_cube()[CROP]
+    else:
+        data_cube = np.load(args.data)
+        expected = load_l2021_cube()[CROP].shape
+        if data_cube.shape != expected:
+            raise SystemExit(f'{args.data} is {data_cube.shape}, CROP gives '
+                             f'{expected}')
+        print(f'data         : {args.data}')
     shape = data_cube.shape
     grid = survey_grid(CROP, shape)
     box_dims = grid.box_dims
@@ -178,7 +325,7 @@ def main():
                                             max_bins=N_K_BINS)
     occupied_bins = np.unique(idxs)
     occupied_bins = occupied_bins[occupied_bins > 0]
-    S = load(S_FILE)
+    S = load(S_FILE) * args.S_start_scale
     check_grid_matches_S(grid, kbin_meta)
     if S.size != np.prod(shape):
         raise SystemExit(f'{S_FILE} has {S.size} entries, this grid has '
@@ -203,11 +350,22 @@ def main():
     # Systematics: ground spill
     # ------------------------------------------------------------------
     if args.groundspill:
+        beamed = args.beam_table is not None or args.beam_fwhm is not None
+        gs_smooth = (args.gs_smooth == 'on'
+                     or (args.gs_smooth == 'auto' and beamed))
+        if gs_smooth and args.gs_deflate:
+            raise SystemExit('--gs-deflate would project the smooth template '
+                             'out entirely; use one or the other '
+                             '(--gs-smooth off to deflate)')
         sys_basis = groundspill_basis(
             grid.freqs, shape, period=args.gs_period,
             n_harmonics=args.gs_harmonics, order=args.gs_order,
-            scan_axis=args.gs_scan_axis)
-        G = np.full(sys_basis.n_params, args.gs_prior ** 2)
+            scan_axis=args.gs_scan_axis, include_smooth=gs_smooth,
+            fg_basis=evecs if args.gs_deflate else None)
+        G = np.full(sys_basis.g_shape, args.gs_prior ** 2)
+        if gs_smooth:
+            G[:, 0] = args.gs_smooth_prior ** 2     # spectral row 0 is smooth
+        G = G.ravel()
         g_mean = np.zeros(sys_basis.g_shape)
         bandwidth = grid.freqs[-1] - grid.freqs[0]
         # A ripple is a single k_parallel mode: all of its power goes into one
@@ -218,7 +376,8 @@ def main():
                     for m in range(1, args.gs_harmonics + 1)]
         print(f'groundspill  : {sys_basis.n_params} params '
               f'({sys_basis.n_s} spatial x {sys_basis.n_t} spectral), '
-              f'prior std {args.gs_prior:g} K')
+              f'prior std {args.gs_prior:g} K'
+              + (f', smooth {args.gs_smooth_prior:g} K' if gs_smooth else ''))
         print(f'               period {args.gs_period:g} MHz -> k_par '
               + ', '.join(f'{k:.4f}' for k in k_ripple) + ' Mpc^-1')
         for k in k_ripple:
@@ -227,6 +386,64 @@ def main():
                   f'(k = {sig_k[bin_i]:.4f})')
     else:
         sys_basis = G = g_mean = None
+        gs_smooth = False
+
+    # ------------------------------------------------------------------
+    # Beam
+    # ------------------------------------------------------------------
+    nu_ref = None
+    if args.beam_table is not None:
+        beam = load_beam_table(args.beam_table, grid.freqs, shape,
+                               width_scale=args.beam_width_scale)
+        print(f'beam         : {beam.source} '
+              f'({grid.freqs[0]:.1f}-{grid.freqs[-1]:.1f} MHz)')
+    elif args.beam_fwhm is not None:
+        nu_ref = (args.beam_nu_ref if args.beam_nu_ref is not None
+                  else float(grid.freqs.mean()))
+        fwhm = args.beam_fwhm * args.beam_width_scale
+        beam = gaussian_beam(grid.freqs, shape, fwhm, nu_ref,
+                             index=args.beam_index)
+        fw = beam_fwhm(grid.freqs[[0, -1]], fwhm, nu_ref, args.beam_index)
+        print(f'beam         : Gaussian, FWHM {fw[0]:.3f} deg at '
+              f'{grid.freqs[0]:.1f} MHz -> {fw[1]:.3f} deg at '
+              f'{grid.freqs[-1]:.1f} MHz (index {args.beam_index:g})')
+    else:
+        beam = None
+
+    gs_solve = None
+    if sys_basis is not None:
+        gs_solve = (args.gs_solve if args.gs_solve != 'auto'
+                    else ('marginal' if beam is not None else 'joint'))
+        print(f'               g solve: {gs_solve}')
+
+    # In a joint solve the smooth spill template is almost reproducible by
+    # B Uf f, and the solver barely moves its amplitude (docs/STATUS.md,
+    # finding 9 of 'The beam in the MODEL'). Projecting that part out leaves
+    # what the model can fit unchanged and removes that near-null direction,
+    # though not the one against B Us s. Integrating g out removes both.
+    if gs_smooth and beam is not None and gs_solve == 'joint':
+        sys_basis = beam_project(sys_basis, beam.full_transfer(), evecs,
+                                 rows=[0])
+        print('               smooth templates: B Uf projected out')
+
+    # Collapsed S step. Modes the beam has removed carry (almost) no
+    # information about S; drawing S from them as well lets S re-estimate
+    # itself from its own prior draws -- a near random walk. Instead draw S
+    # from the visible modes only (marginalising the rest), then apply it to
+    # every mode in the bin. Exact as the excluded modes' information -> 0.
+    if beam is not None and not args.no_collapse:
+        visible = beam.observable_modes(args.beam_threshold)
+        idxs_S = np.where(visible, idxs, 0)
+        kept = [int(np.sum(idxs_S == b)) for b in occupied_bins]
+        total = [int(np.sum(idxs == b)) for b in occupied_bins]
+        if min(kept) < 3:
+            raise SystemExit(f'--beam-threshold {args.beam_threshold:g} '
+                             f'leaves bins with {kept} visible modes')
+        print('S step       : drawn from beam-visible modes only, '
+              + ', '.join(f'{k}/{t}' for k, t in zip(kept, total)))
+    else:
+        idxs_S = idxs
+        kept = None
 
     # ------------------------------------------------------------------
     # Noise
@@ -243,35 +460,77 @@ def main():
     rfft_shape = s_true.shape
     f_len = f_true.size
     f_shape = f_true.shape
-    g_len = 0 if sys_basis is None else sys_basis.n_params
+    # With g integrated out, the solve is over (s, f) alone and the noise
+    # weights become an operator; g is drawn after each solve.
+    marg = (MarginalNoise(Nw_inv, sys_basis, G) if gs_solve == 'marginal'
+            else None)
+    solve_basis = None if marg is not None else sys_basis
+    A_noise = marg if marg is not None else Nw_inv
+    g_len = 0 if solve_basis is None else solve_basis.n_params
     total_len = 2 * rfft_len + f_len + g_len
 
     # ------------------------------------------------------------------
     # Starting points
     # ------------------------------------------------------------------
     s_mean = np.zeros(rfft_shape)                # zero-mean signal prior
-    f_mean = (d_2d @ evecs.T).reshape(shape[0], shape[1], n_modes)
+    # The data's own projection onto the foreground basis: the starting
+    # point for f, and (--f-prior-mean data) the centre of its prior.
+    f_proj = (d_2d @ evecs.T).reshape(shape[0], shape[1], n_modes)
+    f_prior = (args.f_prior_mean if args.f_prior_mean != 'auto'
+               else ('zero' if beam is not None else 'data'))
+    f_mean = f_proj if f_prior == 'data' else np.zeros_like(f_proj)
+    print(f'fg prior     : centred on {"the data projection" if f_prior == "data" else "zero"}')
 
-    # Perturb before the inverse-Wishart draw: at f == f_mean exactly the
+    # Perturb before the inverse-Wishart draw: at f == f_proj exactly the
     # scatter matrix is singular, so FCS needs the spread.
-    f_init = f_mean * np.random.normal(1.0, 0.05, f_mean.shape)
+    f_init = f_proj * np.random.normal(1.0, 0.05, f_proj.shape)
     F = np.diag(FCS(f_init.reshape(-1, n_modes)))
 
     x = np.concatenate([s_mean.real.flatten(), s_mean.imag.flatten(),
-                        f_mean.flatten()]
-                       + ([g_mean.flatten()] if sys_basis is not None else []))
+                        f_proj.flatten()]
+                       + ([g_mean.flatten()] if solve_basis is not None else []))
+
+    A_calls = [0]
+    matvecs = []
 
     def A_flat(vec):
-        return construct_A(vec, S, Nw_inv, F, w, evecs, rfft_len, rfft_shape,
+        A_calls[0] += 1
+        return construct_A(vec, S, A_noise, F, w, evecs, rfft_len, rfft_shape,
                            f_len, f_shape, shape,
-                           sys_basis=sys_basis, G=G).flatten()
+                           sys_basis=solve_basis, G=G, beam=beam).flatten()
 
     L = LinearOperator(matvec=A_flat, rmatvec=A_flat, shape=(len(x), len(x)))
+
+    # With a beam and a mask the default foreground preconditioner does not
+    # converge (docs/STATUS.md); treat the stiff low-order modes exactly.
+    fg_block = None
+    if beam is not None and args.fg_dense_modes > 0:
+        t0 = time.time()
+        fg_block = MaskedForegroundBlock(beam, w, evecs, N_inv_scalar,
+                                         n_dense=args.fg_dense_modes,
+                                         n_groups=args.fg_beam_groups)
+        fg_block.factor(F)
+        print(f'fg precond   : exact-mask block, {fg_block.n_dense} modes, '
+              f'{args.fg_beam_groups} beam groups, built in '
+              f'{time.time() - t0:.0f} s, refreshed every {args.fg_refresh}')
 
     precond_apply = construct_preconditioner(S, N_inv_scalar, F, evecs,
                                              rfft_len, rfft_shape, f_len,
                                              f_shape, shape,
-                                             sys_basis=sys_basis, G=G)
+                                             sys_basis=solve_basis, G=G,
+                                             beam=beam, fg_block=fg_block)
+    if marg is not None:
+        # The marginal system is A0 minus a rank-n_params term that the
+        # preconditioner above does not see; correct it by Woodbury. The
+        # coupling rows A_x^T W Ug e_i do not depend on S or F.
+        zero_s, zero_f = np.zeros(rfft_shape), np.zeros(f_shape)
+        C_marg = np.array([
+            construct_b(S, N_inv, F, w, zero_s, zero_f, evecs, data_cube,
+                        np.zeros(rfft_len), zero_f, np.zeros(w.size), shape,
+                        beam=beam, weighted_data=row)
+            for row in marg.WU])
+        w_adj = rfft_adjoint_weight(rfft_shape, f_len)
+        precond_apply = marg.preconditioner(precond_apply, C_marg, w_adj)
 
     # ------------------------------------------------------------------
     # Sampling
@@ -282,22 +541,53 @@ def main():
                    'n_modes': n_modes, 'n_samples': args.n_samples,
                    'T_sys': T_SYS, 'del_nu_Hz': DEL_NU, 'del_t_s': DEL_T,
                    'tol': args.tol, 'seed': args.seed, 'flagging': flagging,
+                   'S_start_scale': args.S_start_scale,
+                   'fix_S': bool(args.fix_S),
+                   'f_prior_mean': f_prior,
                    'groundspill': bool(args.groundspill),
                    'gs_period_MHz': args.gs_period if args.groundspill else None,
                    'gs_harmonics': args.gs_harmonics if args.groundspill else None,
                    'gs_order': args.gs_order if args.groundspill else None,
                    'gs_scan_axis': args.gs_scan_axis if args.groundspill else None,
                    'gs_prior_K': args.gs_prior if args.groundspill else None,
+                   'gs_deflate': bool(args.groundspill and args.gs_deflate),
+                   'gs_smooth': bool(args.groundspill and gs_smooth),
+                   'gs_smooth_projected': bool(args.groundspill and gs_smooth
+                                               and beam is not None
+                                               and gs_solve == 'joint'),
+                   'gs_solve': gs_solve,
+                   'gs_smooth_prior_K': (args.gs_smooth_prior
+                                         if args.groundspill and gs_smooth
+                                         else None),
+                   'data': args.data,
+                   'beam_table': args.beam_table,
+                   'beam_collapse': (beam is not None
+                                     and not args.no_collapse),
+                   'beam_threshold': (args.beam_threshold if beam is not None
+                                      else None),
+                   'beam_visible_modes_per_bin': kept,
+                   'fg_dense_modes': (fg_block.n_dense if fg_block is not None
+                                      else 0),
+                   'fg_beam_groups': args.fg_beam_groups,
+                   'fg_refresh': args.fg_refresh,
+                   'beam_fwhm_deg': args.beam_fwhm,
+                   'beam_nu_ref_MHz': nu_ref,
+                   'beam_width_scale': args.beam_width_scale,
+                   'beam_index': (args.beam_index if beam is not None
+                                  else None),
                    'sig_k': sig_k.tolist(), **kbin_meta}, fh, indent=2,
                   default=str)
 
     print(f'\nsampling     : {args.n_samples} samples, {n_modes} FG modes, '
           f'traces -> {sample_dir}/*{suffix}.npy')
     start = time.time()
+    warned_q = False
+    fg_baseline, since_refresh, fg_refreshes = None, 0, []
 
     for rr in tqdm(range(args.n_samples)):
         x0 = x      # warm-start the solver from the previous sample
-        np.save(os.path.join(sample_dir, f'x_sample_{rr}{suffix}.npy'), x)
+        if rr % args.save_x_every == 0:
+            np.save(os.path.join(sample_dir, f'x_sample_{rr}{suffix}.npy'), x)
 
         # Omega draws: these turn the solve from a MAP estimate into a
         # posterior sample. Zero them for the MAP/Wiener-filter solution.
@@ -308,12 +598,16 @@ def main():
               else np.random.normal(size=sys_basis.g_shape))
 
         b = construct_b(S, N_inv, F, w, s_mean, f_mean, evecs, data_cube,
-                        ws, wf, wd, shape, sys_basis=sys_basis, G=G,
-                        wg=wg, g_mean=g_mean)
+                        ws, wf, wd, shape, sys_basis=solve_basis, G=G,
+                        wg=wg, g_mean=g_mean, beam=beam,
+                        weighted_data=(None if marg is None else
+                                       marg.weighted_data(data_cube, wd, wg)))
 
         M_inv = LinearOperator((total_len, total_len), matvec=precond_apply)
+        n_mv = A_calls[0]
         x, exit_code = lgmres(L, b.flatten(), x0=x0, rtol=args.tol, atol=0,
                               M=M_inv)
+        matvecs.append(A_calls[0] - n_mv)
         if exit_code != 0:
             print(f'  [{rr}] lgmres did not converge (exit {exit_code})')
 
@@ -321,20 +615,44 @@ def main():
         s = (x[0:rfft_len].reshape(rfft_shape)
              + x[rfft_len:2 * rfft_len].reshape(rfft_shape) * 1j)
         s = Us(s, False)
+        if marg is not None:
+            # g | s, f, d: the residual after the (beamed) sky model.
+            sky = s.flatten() + Uf(evecs, x[2 * rfft_len:2 * rfft_len + f_len]
+                                   .reshape(f_shape).real, False)
+            if beam is not None:
+                sky = beam.apply(sky)
+            g_draw = marg.draw(data_cube.flatten() - sky,
+                               np.random.normal(size=sys_basis.n_params))
         s = np.fft.fftn(s - np.mean(s), norm='ortho')
 
-        binned_s, k_bins = bin_it(s, sig_k, idxs)
-        _, PkSample = SCS(np.concatenate(binned_s), np.concatenate(k_bins))
+        binned_s, k_bins = bin_it(s, sig_k, idxs_S)
+        if args.fix_S:
+            # S is NOT updated; record the power the S draw would have used.
+            PkSample = np.array([np.mean(np.abs(b) ** 2) for b in binned_s])
+        else:
+            _, PkSample = SCS(np.concatenate(binned_s),
+                              np.concatenate(k_bins))
+            S = np.zeros(len(idxs))
+            for gg, bin_idx in enumerate(occupied_bins):
+                S[idxs == bin_idx] = PkSample[gg]
+            # idxs == 0 is DC plus the kz=0 plane plus sub-footprint modes. A
+            # flat 1e30 prior there would let the signal absorb foreground
+            # power in exactly the degenerate modes, so suppress them and
+            # leave only the true DC mode free to carry the overall mean.
+            S[idxs == 0] = 1e-12 * np.median(PkSample)
+            S[kbin_meta['dc_index']] = 1e30
 
-        S = np.zeros(len(idxs))
-        for gg, bin_idx in enumerate(occupied_bins):
-            S[idxs == bin_idx] = PkSample[gg]
-        # idxs == 0 is DC plus the kz=0 plane plus sub-footprint modes. A flat
-        # 1e30 prior there would let the signal absorb foreground power in
-        # exactly the degenerate modes, so suppress them and leave only the
-        # true DC mode free to carry the overall mean.
-        S[idxs == 0] = 1e-12 * np.median(PkSample)
-        S[kbin_meta['dc_index']] = 1e30
+        if beam is not None and not args.no_collapse and not args.fix_S:
+            # The excluded modes have |B|^2 < threshold, so each carries at
+            # most this data/prior precision ratio. If S has grown enough to
+            # make that non-negligible, the collapse is no longer exact.
+            q_excl = (w.mean() * N_inv * args.beam_threshold
+                      * float(np.max(PkSample)))
+            if q_excl > 0.05 and not warned_q:
+                print(f'  [{rr}] WARNING: excluded modes may now carry up to '
+                      f'{q_excl:.2f} of their prior precision; lower '
+                      f'--beam-threshold')
+                warned_q = True
 
         np.save(os.path.join(sample_dir, f'Pk_trace{rr}{suffix}.npy'), PkSample)
         if args.save_S:
@@ -347,6 +665,7 @@ def main():
         if sys_basis is not None:
             g_off = 2 * rfft_len + f_len
             np.save(os.path.join(sample_dir, f'g_trace{rr}{suffix}.npy'),
+                    g_draw if marg is not None else
                     x[g_off:g_off + g_len].reshape(sys_basis.g_shape))
 
         f_ms = x[2 * rfft_len:2 * rfft_len + f_len].reshape(f_shape).real
@@ -354,15 +673,32 @@ def main():
         F = np.diag(FCS(f_centered))
         np.save(os.path.join(sample_dir, f'F_trace{rr}{suffix}.npy'), F)
 
+        if fg_block is not None:
+            if fg_baseline is None:
+                fg_baseline = matvecs[-1]
+            since_refresh += 1
+            if (since_refresh >= args.fg_refresh
+                    or matvecs[-1] > 2 * fg_baseline):
+                fg_block.factor(F)
+                fg_refreshes.append(rr)
+                fg_baseline, since_refresh = None, 0
         precond_apply = construct_preconditioner(S, N_inv_scalar, F, evecs,
                                                  rfft_len, rfft_shape, f_len,
                                                  f_shape, shape,
-                                                 sys_basis=sys_basis, G=G)
+                                                 sys_basis=solve_basis, G=G,
+                                                 beam=beam, fg_block=fg_block)
+        if marg is not None:
+            precond_apply = marg.preconditioner(precond_apply, C_marg, w_adj)
         gc.collect()
 
+    np.save(os.path.join(args.out, f'matvecs{suffix}.npy'), np.array(matvecs))
+    if fg_block is not None:
+        np.save(os.path.join(args.out, f'fg_refreshes{suffix}.npy'),
+                np.array(fg_refreshes))
     elapsed = time.time() - start
     print(f'\n{args.n_samples} samples with {n_modes} FG modes in '
-          f'{elapsed:.1f} s ({elapsed / args.n_samples:.2f} s/sample)')
+          f'{elapsed:.1f} s ({elapsed / args.n_samples:.2f} s/sample, '
+          f'median {np.median(matvecs):.0f} matvecs/solve)')
 
 
 if __name__ == '__main__':
