@@ -1571,10 +1571,10 @@ both are negligible, so the single template was kept.
 observational run (`Sampling Nb/`, `make_beam_transfer.py`) builds its
 transfer from the same L-band 1-D profiles: its `beam_transfer_L2021.npz`
 matches `build_beam_table.py`'s output to 5e-5, so the two agree. The MSc
-student's beam (added on ilifu since 2026-09-13, see
-`~/handover/OPEN_ITEMS.md` item 7) was not consulted; if theirs is meant to
-be the one that lands, this branch should be reconciled with it rather than
-merged over it. The `museek` ripple-beam
+student's beam (added on ilifu since 2026-09-13) is a separate, unsampled
+implementation in her own project. Decided 2026-11-02: it stays there, and
+this branch, with the beam fully in the sampled model, is the one for this
+repository. They are not to be reconciled. The `museek` ripple-beam
 project (UHF, `~/beam_correction/NOTES.md`) shares physics, not code.
 
 ### Smaller open items
