@@ -7,8 +7,9 @@ logs/
 *.err
 
 # ---- Data not redistributed here ------------------------------------------
-# MeerKLASS L2021 observational cubes. These are collaboration data and are
-# deliberately NOT in this repository -- see README, "Data".
+# Observational cubes. Collaboration data, never in this repository; nothing
+# here needs them (README, "Mock data"). Ignored so a local copy cannot be
+# committed by accident.
 L2021_polished_cube.npy
 L2021_cropped_cube.npy
 LP_*.npy

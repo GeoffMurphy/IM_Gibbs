@@ -2,54 +2,56 @@
 
 The geometry and the k-binning are the two things a mistake in will not raise
 an exception -- it will just attach the signal prior to the wrong wavenumbers
-and produce a plausible-looking wrong answer. These pin them to the values the
-shipped ``S_starting_point_cropped.npy`` was actually generated with.
+and produce a plausible-looking wrong answer. These pin them to the values on
+the live grid, which every result in docs/STATUS.md was measured on.
 
 Run with:  pytest -q
 """
-
-import json
 
 import numpy as np
 import pytest
 
 from imgibbs import (
-    Us, bin_it, data_path, kbins_from_crop, make_kbins, power_spectrum,
+    Us, bin_it, kbins_from_crop, make_kbins, power_spectrum,
     signal_covariance_sampler, survey_grid,
 )
 from imgibbs.grid import DEFAULT_COSMO
 
-CROP = (slice(33, 103), slice(14, 59), slice(0, 250))
+CROP = (slice(None), slice(None), slice(0, 250))
 SHAPE = (70, 45, 250)
 
 pytest.importorskip('pyccl', reason='geometry needs pyccl')
 
+#: The live grid. box_dims and z_mid are what the pre-2026-11 runs recorded
+#: for the same 250 channels, to the last digit.
+BOX_DIMS = (601.1021774732199, 386.4228283756413, 254.39405269274425)
+Z_MID = 0.42570805796653455
+FREQ_MHZ = (970.94140625, 1022.978515625)
 
-@pytest.fixture(scope='module')
-def recorded():
-    """Metadata written by the run that produced the shipped S."""
-    path = data_path('S_starting_point_cropped_meta.json')
-    if not path.exists():
-        pytest.skip(f'{path} not present')
-    return json.loads(path.read_text())
+#: kbins_from_crop on the default mock footprint (imgibbs.drift_footprint).
+MOCK_MODES_PER_BIN = [934, 13200, 108186, 209190, 452778]
+MOCK_K_MIN = 0.04601055797335078
+MOCK_K_MAX = 3.1294419112267176
+MOCK_SIG_K = [0.07016466232683392, 0.16317000182264757, 0.37945667536720257,
+              0.8824377451269079, 2.0521351305023487]
 
 
 # ---------------------------------------------------------------------------
 # Geometry
 # ---------------------------------------------------------------------------
 
-def test_grid_reproduces_recorded_box_dims(recorded):
+def test_grid_reproduces_recorded_box_dims():
     grid = survey_grid(CROP, SHAPE)
-    assert grid.shape == tuple(recorded['shape'])
-    assert np.allclose(grid.box_dims, recorded['box_dims'], rtol=0, atol=0)
-    assert grid.z_mid == recorded['z_mid']
-    assert np.isclose(grid.freqs[0], recorded['freq_MHz'][0])
-    assert np.isclose(grid.freqs[-1], recorded['freq_MHz'][1])
+    assert grid.shape == SHAPE
+    assert np.allclose(grid.box_dims, BOX_DIMS, rtol=1e-12, atol=0)
+    assert np.isclose(grid.z_mid, Z_MID, rtol=1e-12, atol=0)
+    assert np.isclose(grid.freqs[0], FREQ_MHZ[0])
+    assert np.isclose(grid.freqs[-1], FREQ_MHZ[1])
 
 
 def test_grid_follows_the_crop():
     """A different frequency crop must move the radial extent with it."""
-    full = survey_grid((slice(33, 103), slice(14, 59), slice(None)),
+    full = survey_grid((slice(None), slice(None), slice(None)),
                        (70, 45, 500))
     half = survey_grid(CROP, SHAPE)
     assert full.shape[2] == 500 and half.shape[2] == 250
@@ -88,32 +90,22 @@ def _band_cube(shape=SHAPE, width=0.35):
     return cube
 
 
-def test_kbins_reproduce_the_recorded_run(recorded):
-    """Requires the real cube; the footprint is measured from it."""
-    path = data_path('L2021_polished_cube.npy')
-    if not path.exists():
-        pytest.skip('L2021_polished_cube.npy not available (not redistributed)')
-
-    cube = np.load(path)[CROP]
-    grid = survey_grid(CROP, cube.shape)
-    sig_k, idxs, meta = kbins_from_crop(cube, grid.box_dims, max_bins=5,
-                                        verbose=False)
-
+def test_kbins_on_the_mock_footprint():
+    """The binning every mock run uses; the footprint sets k_min."""
+    from imgibbs import drift_footprint
+    grid = survey_grid(CROP, SHAPE)
+    sig_k, idxs, meta = kbins_from_crop(drift_footprint(SHAPE), grid.box_dims,
+                                        max_bins=5, verbose=False)
     # The DISCRETE results are what correctness depends on -- which mode
     # lands in which bin -- so those stay exact.
-    assert meta['n_k_bins'] == recorded['n_k_bins']
-    assert meta['modes_per_bin'] == recorded['kbin_modes_per_bin']
-
-    # The float bin edges get a tight tolerance rather than ==. Verified
-    # 2026-09-23 across pyccl 3.3.0 (laptop) and 3.3.6 (ilifu): box_dims is
-    # bit-identical, the per-voxel bin assignment `idxs` is bit-identical
-    # (md5 63b43f2c09533c439f090da11c5a768b on both), and k_min differs only
-    # in the last ULP -- 0.044702979009669463 vs ...443. Requiring == here
-    # fails on a machine that is in fact reproducing the run exactly, which
-    # trains people to ignore this test.
-    assert np.isclose(meta['k_min'], recorded['kbin_k_min'], rtol=1e-12, atol=0)
-    assert np.isclose(meta['k_max'], recorded['kbin_k_max'], rtol=1e-12, atol=0)
-    assert np.allclose(sig_k, recorded['kbin_sig_k'], rtol=1e-12, atol=0)
+    assert meta['n_k_bins'] == 5
+    assert meta['modes_per_bin'] == MOCK_MODES_PER_BIN
+    # Float edges get a tight tolerance rather than ==: across pyccl 3.3.0
+    # and 3.3.6 box_dims and the per-voxel bins were bit-identical while
+    # k_min differed in the last ULP (verified 2026-09-23).
+    assert np.isclose(meta['k_min'], MOCK_K_MIN, rtol=1e-12, atol=0)
+    assert np.isclose(meta['k_max'], MOCK_K_MAX, rtol=1e-12, atol=0)
+    assert np.allclose(sig_k, MOCK_SIG_K, rtol=1e-12, atol=0)
 
 
 def test_kbins_every_bin_clears_min_modes():

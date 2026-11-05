@@ -2,17 +2,18 @@
 intensity mapping data cubes.
 
 Gibbs sampling with Gaussian Constrained Realisations, jointly inferring the
-21cm signal, the foreground amplitudes, and both of their covariances, on the
-real (non-cubic) MeerKLASS L2021 footprint.
+21cm signal, the foreground amplitudes, and both of their covariances, on a
+non-cubic MeerKAT L-band grid. :mod:`imgibbs.mock` builds the observations it
+runs on; :func:`run_chain` is the sampler.
 """
 
-from .data import DATA_DIR, data_path, load, load_l2021_cube
+from .data import DATA_DIR, data_path, load
 from .covariance import (
     foreground_covariance_sampler,
     signal_covariance_sampler,
 )
 from .grid import (
-    DEFAULT_COSMO, FOOTPRINT_CROP, PIX_DEG, SurveyGrid, survey_grid,
+    DEFAULT_COSMO, PIX_DEG, SurveyGrid, survey_grid,
 )
 from .kbins import (
     bin_it,
@@ -45,12 +46,19 @@ from .linear_system import (
     construct_b,
     construct_preconditioner,
 )
+from .mock import (
+    Mock, drift_footprint, expected_hi_power, binned_power, foreground_cube,
+    hi_cube, load_mock, make_mock, mock_grid, systematic_cube,
+)
+from .sampler import (
+    Chain, legendre_basis, load_chain, run_chain, signal_prior,
+)
 
 __version__ = '2.0.0.dev0'
 
 __all__ = [
-    'DATA_DIR', 'data_path', 'load', 'load_l2021_cube',
-    'DEFAULT_COSMO', 'FOOTPRINT_CROP', 'PIX_DEG', 'SurveyGrid', 'survey_grid',
+    'DATA_DIR', 'data_path', 'load',
+    'DEFAULT_COSMO', 'PIX_DEG', 'SurveyGrid', 'survey_grid',
     'make_kbins', 'kbins_from_crop', 'footprint_kmin', 'bin_it',
     'power_spectrum',
     'Us', 'Uf', 'construct_Uf', 'construct_A', 'construct_b',
@@ -69,4 +77,8 @@ __all__ = [
     'tabulated_beam', 'load_beam_table', 'radial_transfer',
     'grid_beam', 'read_beam_profiles',
     'beam_from_spec', 'beam_run_args',
+    'Mock', 'make_mock', 'load_mock', 'mock_grid', 'drift_footprint',
+    'hi_cube', 'foreground_cube', 'systematic_cube', 'binned_power',
+    'expected_hi_power',
+    'Chain', 'run_chain', 'load_chain', 'legendre_basis', 'signal_prior',
 ]

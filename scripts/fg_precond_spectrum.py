@@ -1,11 +1,12 @@
 #!/usr/bin/env python
-"""Spectrum of the preconditioned foreground block on a sub-box of the real mask.
+"""Spectrum of the preconditioned foreground block on a sub-box of the footprint.
 
-Reproduces the preconditioner table in docs/STATUS.md ("The beam in the
+Re-measures the preconditioner table in docs/STATUS.md ("The beam in the
 MODEL", finding 3). Forms the exact foreground block A_ff = F^-1 + N^-1 Uf^T
-B W B Uf densely on a small sub-box of the live crop (with the measured beam
-and the real mask), then for each candidate preconditioner reports LGMRES
-and CG iteration counts and the eigenvalue range of M^-1 A_ff.
+B W B Uf densely on a small sub-box of the mock footprint (imgibbs.mock),
+then for each candidate preconditioner reports LGMRES and CG iteration counts
+and the eigenvalue range of M^-1 A_ff. The table was measured on the real
+L2021 footprint with a measured beam, so the numbers will differ in detail.
 
     python scripts/fg_precond_spectrum.py 10 38 5 25 [beam_table.npz]
 
@@ -23,8 +24,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from imgibbs import *
 import imgibbs.grid as g
 
-CROP = (slice(33, 103), slice(14, 59), slice(0, 250))
-full = load_l2021_cube()[CROP]
+from imgibbs.mock import make_mock
+CROP = (slice(None), slice(None), slice(0, 250))
+full = make_mock(beam_fwhm=None).cube
 sx, sy = slice(int(sys.argv[1]), int(sys.argv[2])), slice(int(sys.argv[3]), int(sys.argv[4]))
 cube = full[sx, sy]
 shape = cube.shape; nx, ny, nz = shape; P = nx * ny

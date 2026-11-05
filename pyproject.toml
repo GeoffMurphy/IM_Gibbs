@@ -17,14 +17,13 @@ dependencies = [
     "astropy",
     "tqdm",
     "pyccl>=3.0",
+    # FastBox generates the H I and foreground mocks everything runs on. This
+    # pins a fork of it so an upstream change cannot silently move the
+    # simulated truth. See README, "FastBox".
+    "fastbox @ git+https://github.com/GeoffMurphy/FastBox.git",
 ]
 
 [project.optional-dependencies]
-# FastBox provides the simulated H I cubes and the PCA filter. Upstream added
-# non-cubic grid support in 2026; this pins a fork of it so an upstream change
-# cannot silently move the simulated truth curve. See README, "Installing
-# FastBox".
-sim = ["fastbox @ git+https://github.com/GeoffMurphy/FastBox.git"]
 notebooks = ["jupyter", "ipywidgets"]
 
 [project.urls]
