@@ -24,7 +24,8 @@ from .kbins import (
 )
 from .systematics import (
     C_M_MHZ, ENVELOPE_INDEX, RIPPLE_PERIOD_MHZ, RM_DEFAULT, T_GROUND,
-    SystematicBasis, TemplateBasis, beam_project, best_fit_amplitudes,
+    CompositeBasis, SystematicBasis, TemplateBasis, beam_project,
+    best_fit_amplitudes,
     deflate_foreground, project_out_beamed,
     faraday_templates, groundspill_basis,
     groundspill_cube, lambda_squared, leakage_basis, onef_basis,
@@ -49,6 +50,7 @@ from .linear_system import (
 from .mock import (
     Mock, drift_footprint, expected_hi_power, binned_power, foreground_cube,
     hi_cube, load_mock, make_mock, mock_grid, systematic_cube,
+    systematics_cube,
 )
 from .sampler import (
     Chain, legendre_basis, load_chain, run_chain, signal_prior,
@@ -65,7 +67,7 @@ __all__ = [
     'construct_preconditioner', 'MaskedForegroundBlock', 'MarginalNoise',
     'rfft_adjoint_weight',
     'signal_covariance_sampler', 'foreground_covariance_sampler',
-    'SystematicBasis', 'TemplateBasis', 'beam_project',
+    'CompositeBasis', 'SystematicBasis', 'TemplateBasis', 'beam_project',
     'project_out_beamed', 'groundspill_basis', 'groundspill_cube',
     'spectral_templates', 'scan_templates', 'spillover_envelope',
     'ripple_wavenumber', 'period_scan',
@@ -78,7 +80,8 @@ __all__ = [
     'grid_beam', 'read_beam_profiles',
     'beam_from_spec', 'beam_run_args',
     'Mock', 'make_mock', 'load_mock', 'mock_grid', 'drift_footprint',
-    'hi_cube', 'foreground_cube', 'systematic_cube', 'binned_power',
+    'hi_cube', 'foreground_cube', 'systematic_cube', 'systematics_cube',
+    'binned_power',
     'expected_hi_power',
     'Chain', 'run_chain', 'load_chain', 'legendre_basis', 'signal_prior',
 ]

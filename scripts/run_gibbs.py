@@ -16,15 +16,16 @@ drift-scan footprint; it is written to ``<out>/mock.npz`` so the run can be
 scored against the truth afterwards. ``--mock-*`` options add a beam or a
 systematic to it.
 
-The run in the end-to-end notebook -- beam and ground spill in the mock, both
-modelled::
+The run in the end-to-end notebook -- a beam and all three systematics in
+the mock, all modelled::
 
     python scripts/run_gibbs.py 6 --n-samples 2000 --out outputs/end_to_end \\
-        --mock-beam-fwhm 1.5 --mock-systematic groundspill \\
-        --beam-fwhm 1.5 --groundspill
+        --mock-beam-fwhm 1.5 --mock-systematic all \\
+        --beam-fwhm 1.5 --groundspill --onef --leakage
 
-Add ``--groundspill`` to sample a standing-wave systematic jointly with the
-signal and the foreground; that writes a ``g_trace`` alongside the others.
+``--groundspill``, ``--onef`` and ``--leakage`` each add a block of
+systematic templates, sampled jointly with the signal and the foreground as
+one ``g``; that writes a ``g_trace`` alongside the others.
 ``--beam-fwhm`` puts a chromatic Gaussian primary beam on the sky (signal and
 foreground, not the systematic); ``--beam-table`` takes any tabulated
 ``B(|k_perp|, nu)`` (format: ``imgibbs.load_beam_table``).
@@ -52,12 +53,13 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from imgibbs import (                                          # noqa: E402
-    kbins_from_crop, groundspill_basis, ripple_wavenumber, gaussian_beam,
-    beam_fwhm, load_beam_table, beam_project,
+    CompositeBasis, kbins_from_crop, groundspill_basis, leakage_basis,
+    onef_basis, ripple_wavenumber, gaussian_beam, beam_fwhm, load_beam_table,
+    beam_project,
 )
 from imgibbs.mock import (                                     # noqa: E402
-    DEL_NU, DEL_T, MOCK_SHAPE, SYSTEMATICS, T_SYS, binned_power,
-    expected_hi_power, load_mock, make_mock, mock_grid,
+    DEL_NU, DEL_T, MOCK_SHAPE, SYSTEMATICS, T_SYS, _systematic_names,
+    binned_power, expected_hi_power, load_mock, make_mock, mock_grid,
 )
 from imgibbs.sampler import (                                  # noqa: E402
     legendre_basis, resolve_gs_solve, run_chain, signal_prior,
@@ -151,10 +153,11 @@ def parse_args():
                     help='convolve the mock sky with a Gaussian beam of this '
                          'FWHM in degrees at the band centre (default: none)')
     mk.add_argument('--mock-systematic', default=None,
-                    choices=sorted(SYSTEMATICS),
-                    help='inject this systematic (default: none)')
+                    type=_mock_systematic,
+                    help='inject this systematic: ' + ', '.join(SYSTEMATICS)
+                         + ', a comma-separated list, or all (default: none)')
     mk.add_argument('--mock-sys-rms', type=float, default=None,
-                    help='rms of the injected systematic, K (default '
+                    help='rms of each injected systematic, K (default '
                          '1e-3, about the HI rms)')
     g = p.add_argument_group(
         'ground spill',
@@ -217,6 +220,25 @@ def parse_args():
                         'cannot be estimated from a single draw. Set it from '
                         'instrument characterisation, generously -- it is a '
                         'nuisance parameter being marginalised over.')
+    o = p.add_argument_group(
+        '1/f and polarisation leakage',
+        'More template blocks, sampled with the ground spill as one g. Each '
+        'amplitude multiplies a template of unit rms, so a prior std is the '
+        'rms it allows in the cube.')
+    o.add_argument('--onef', action='store_true',
+                   help='sample a 1/f block: the leading KL modes of a 1/f '
+                        'covariance, with the foreground span deflated out '
+                        '(imgibbs.onef_basis) -- the part f cannot absorb')
+    o.add_argument('--onef-prior', type=float, default=1e-2,
+                   help='prior std on each 1/f amplitude, K (default 1e-2)')
+    o.add_argument('--leakage', action='store_true',
+                   help='sample a polarisation-leakage block: {1, x, y} x '
+                        '{cos, sin} of the Faraday angle (imgibbs.leakage_basis)')
+    o.add_argument('--leak-rm', type=float, default=1000.0,
+                   help='rotation measure, rad m^-2 (default 1000). Like the '
+                        'ripple period, not sampled.')
+    o.add_argument('--leak-prior', type=float, default=1e-2,
+                   help='prior std on each leakage amplitude, K (default 1e-2)')
     bm = p.add_argument_group(
         'beam',
         'Convolve the sky (signal and foreground) with a chromatic Gaussian '
@@ -274,11 +296,19 @@ def parse_args():
     return p.parse_args()
 
 
+def _mock_systematic(text):
+    try:
+        return _systematic_names(text)
+    except ValueError as err:
+        raise argparse.ArgumentTypeError(str(err))
+
+
 def load_data(args):
     """The cube to sample, and the Mock behind it if there is one."""
     if args.data is None:
-        sys_kwargs = ({} if args.mock_sys_rms is None
-                      else {'rms': args.mock_sys_rms})
+        names = args.mock_systematic or []
+        sys_kwargs = ({} if args.mock_sys_rms is None else
+                      {n: {'rms': args.mock_sys_rms} for n in names})
         mock = make_mock(shape=tuple(args.mock_shape), seed=args.mock_seed,
                          beam_fwhm=args.mock_beam_fwhm,
                          systematic=args.mock_systematic,
@@ -408,10 +438,8 @@ def main():
             bin_i = int(np.argmin(np.abs(sig_k - k)))
             print(f'               k = {k:.4f} is nearest bin {bin_i} '
                   f'(k = {sig_k[bin_i]:.4f})')
-        gs_solve = resolve_gs_solve(args.gs_solve, beam)
-        print(f'               g solve: {gs_solve}')
     else:
-        sys_basis = G = gs_solve = None
+        sys_basis = G = None
         gs_smooth = False
 
     # In a joint solve the smooth spill template is almost reproducible by
@@ -419,10 +447,49 @@ def main():
     # finding 9 of 'The beam in the MODEL'). Projecting that part out leaves
     # what the model can fit unchanged and removes that near-null direction,
     # though not the one against B Us s. Integrating g out removes both.
+    gs_solve = (None if not (args.groundspill or args.onef or args.leakage)
+                else resolve_gs_solve(args.gs_solve, beam))
     if gs_smooth and beam is not None and gs_solve == 'joint':
         sys_basis = beam_project(sys_basis, beam.full_transfer(), evecs,
                                  rows=[0])
         print('               smooth templates: B Uf projected out')
+
+    # ------------------------------------------------------------------
+    # Systematics: 1/f and leakage, appended to the same g
+    # ------------------------------------------------------------------
+    blocks, priors, names = [], [], []
+    if sys_basis is not None:
+        blocks, priors, names = [sys_basis], [G], ['groundspill']
+    if args.onef:
+        b, _ = onef_basis(grid.freqs, shape, fg_basis=evecs)
+        blocks.append(b)
+        priors.append(np.full(b.n_params, args.onef_prior ** 2))
+        names.append('onef')
+        print(f'1/f          : {b.n_params} params ({b.n_s} scan x {b.n_t} '
+              f'spectral KL modes, foreground span deflated), prior std '
+              f'{args.onef_prior:g} K')
+    if args.leakage:
+        b = leakage_basis(grid.freqs, shape, rm=args.leak_rm)
+        blocks.append(b)
+        priors.append(np.full(b.n_params, args.leak_prior ** 2))
+        names.append('leakage')
+        print(f'leakage      : {b.n_params} params ({b.n_s} spatial x '
+              f'{b.n_t} spectral), RM {args.leak_rm:g} rad m^-2, prior std '
+              f'{args.leak_prior:g} K')
+    if len(blocks) > 1:
+        sys_basis = CompositeBasis(blocks, names)
+        G = np.concatenate(priors)
+        ov = sys_basis.overlap(w)
+        for i in range(len(names)):
+            for j in range(i + 1, len(names)):
+                note = ('  <- nearly degenerate: the data fix the sum, the '
+                        'prior the split' if ov[i, j] > 0.9 else '')
+                print(f'overlap      : {names[i]} / {names[j]} '
+                      f'{ov[i, j]:.3f}{note}')
+    elif blocks:
+        sys_basis, G = blocks[0], priors[0]
+    if gs_solve is not None:
+        print(f'g solve      : {gs_solve}, {sys_basis.n_params} amplitudes')
 
     # ------------------------------------------------------------------
     # Noise
@@ -454,6 +521,12 @@ def main():
                                           and beam is not None
                                           and gs_solve == 'joint'),
               'gs_solve': gs_solve,
+              'sys_blocks': names,
+              'onef': bool(args.onef),
+              'onef_prior_K': args.onef_prior if args.onef else None,
+              'leakage': bool(args.leakage),
+              'leak_rm': args.leak_rm if args.leakage else None,
+              'leak_prior_K': args.leak_prior if args.leakage else None,
               'gs_smooth_prior_K': (args.gs_smooth_prior
                                     if args.groundspill and gs_smooth
                                     else None),

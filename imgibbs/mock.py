@@ -43,7 +43,7 @@ import numpy as np
 from .beam import gaussian_beam
 from .grid import NU0, NU1, NCHAN, PIX_DEG, survey_grid
 from .systematics import (
-    groundspill_cube, leakage_basis, onef_basis, realise,
+    CompositeBasis, groundspill_cube, leakage_basis, onef_basis, realise,
 )
 
 #: The working grid: (RA, Dec, frequency) pixels.
@@ -254,6 +254,70 @@ def systematic_cube(name, grid, seed=None, **kwargs):
     return cube, basis, g_true
 
 
+def _systematic_names(systematic):
+    """``None``, one name, ``'all'`` or a list -> a list of names (or None)."""
+    if systematic is None:
+        return None
+    if isinstance(systematic, str):
+        names = (list(SYSTEMATICS) if systematic == 'all'
+                 else [s for s in systematic.split(',') if s])
+    else:
+        names = list(systematic)
+    unknown = [n for n in names if n not in SYSTEMATICS]
+    if unknown:
+        raise ValueError(f'unknown systematic {unknown}; '
+                         f"choose from {sorted(SYSTEMATICS)} or 'all'")
+    if len(set(names)) != len(names):
+        raise ValueError(f'systematic named twice: {names}')
+    return names or None
+
+
+def systematics_cube(systematic, grid, seed=None, sys_kwargs=None):
+    """One systematic or several, summed. See :func:`systematic_cube`.
+
+    ``systematic`` is a name, a list of names, or ``'all'``. With one name
+    this *is* :func:`systematic_cube` (same seed, same cube) and
+    ``sys_kwargs`` is its overrides. With several, ``sys_kwargs`` maps each
+    name to its overrides, each systematic draws from its own stream --
+    fixed by its place in :data:`SYSTEMATICS`, so adding or dropping one
+    leaves the others unchanged -- and the basis is a
+    :class:`~imgibbs.CompositeBasis` in the order given.
+
+    Returns ``(cube, basis, g_true, kwargs)``; ``kwargs`` is the full set of
+    parameters used, in the same layout as ``sys_kwargs``.
+    """
+    names = _systematic_names(systematic)
+    if names is None:
+        return np.zeros(grid.shape), None, None, {}
+    sys_kwargs = sys_kwargs or {}
+    if len(names) == 1:
+        name = names[0]
+        # Flat overrides, or keyed by name as for several.
+        own = (sys_kwargs[name] if isinstance(sys_kwargs.get(name), dict)
+               else sys_kwargs)
+        kw = {**SYSTEMATICS[name], **own}
+        cube, basis, g = systematic_cube(name, grid, seed, **kw)
+        return cube, basis, g, kw
+    unknown = set(sys_kwargs) - set(names)
+    if unknown:
+        raise ValueError(f'sys_kwargs for systematics not in the mock: '
+                         f'{sorted(unknown)} (with several systematics, '
+                         f'sys_kwargs is keyed by name)')
+    streams = dict(zip(SYSTEMATICS, np.random.SeedSequence(seed).spawn(
+        len(SYSTEMATICS))))
+    cube, parts, gs, used = np.zeros(grid.shape), [], [], {}
+    for name in names:
+        kw = {**SYSTEMATICS[name], **sys_kwargs.get(name, {})}
+        c, b, g = systematic_cube(name, grid,
+                                  int(streams[name].generate_state(1)[0]),
+                                  **kw)
+        cube += c
+        parts.append(b)
+        gs.append(np.asarray(g).ravel())
+        used[name] = kw
+    return cube, CompositeBasis(parts, names), np.concatenate(gs), used
+
+
 # ---------------------------------------------------------------------------
 # The whole thing
 # ---------------------------------------------------------------------------
@@ -304,14 +368,21 @@ class Mock:
                 'none' if self.beam is None else
                 f"Gaussian, FWHM {self.config['beam_fwhm']:g} deg at "
                 f"{self.config['beam_nu_ref']:.1f} MHz"),
-            'systematic   : ' + (
-                'none' if self.sys_basis is None else
-                f"{self.config['systematic']}, rms "
-                f"{self.config['sys_kwargs']['rms']:.1e} K, "
-                f"{self.sys_basis.n_params} amplitudes"),
+            'systematic   : ' + self._systematic_summary(),
             f'noise        : rms {self.config["noise_rms"]:.3e} K',
         ]
         return '\n'.join(lines)
+
+    def _systematic_summary(self):
+        if self.sys_basis is None:
+            return 'none'
+        name, kw = self.config['systematic'], self.config['sys_kwargs']
+        if isinstance(name, str):
+            return (f"{name}, rms {kw['rms']:.1e} K, "
+                    f"{self.sys_basis.n_params} amplitudes")
+        each = ', '.join(f"{n} {kw[n]['rms']:.1e} K" for n in name)
+        return (f'{each} (rms each); {self.systematic[self.mask > 0].std():.1e}'
+                f' K together, {self.sys_basis.n_params} amplitudes')
 
     def save(self, path):
         """Write to ``path`` (``.npz``). Rebuild with :func:`load_mock`."""
@@ -344,9 +415,13 @@ def make_mock(shape=MOCK_SHAPE, seed=0, beam_fwhm=BEAM_FWHM, beam_nu_ref=None,
         centre). ``None`` for no beam.
     beam_index : float
         Chromatic index, FWHM ~ nu^-index.
-    systematic : {'groundspill', 'onef', 'leakage', None}
+    systematic : str, list of str, or None
+        ``'groundspill'``, ``'onef'``, ``'leakage'``, a list of them (or a
+        comma-separated string), or ``'all'``. Several are summed, and
+        ``sys_basis`` is then a :class:`~imgibbs.CompositeBasis`.
     sys_kwargs : dict
-        Overrides for :data:`SYSTEMATICS`.
+        Overrides for :data:`SYSTEMATICS`. With several systematics, keyed by
+        name: ``{'leakage': {'rm': 500}}``.
     t_sys, del_t : float
         Radiometer noise.
     footprint : dict or array, optional
@@ -379,12 +454,11 @@ def make_mock(shape=MOCK_SHAPE, seed=0, beam_fwhm=BEAM_FWHM, beam_nu_ref=None,
         beam = gaussian_beam(grid.freqs, shape, beam_fwhm, beam_nu_ref,
                              index=beam_index, pix_deg=PIX_DEG)
 
-    sys_kwargs = {**SYSTEMATICS.get(systematic, {}), **(sys_kwargs or {})}
-    if systematic is None:
-        sys_cube, sys_basis, g_true = np.zeros(shape), None, None
-    else:
-        sys_cube, sys_basis, g_true = systematic_cube(
-            systematic, grid, seeds['systematic'], **sys_kwargs)
+    names = _systematic_names(systematic)
+    sys_cube, sys_basis, g_true, sys_kwargs = systematics_cube(
+        names, grid, seeds['systematic'], sys_kwargs)
+    systematic = (None if names is None else
+                  names[0] if len(names) == 1 else names)
 
     sigma = noise_rms(t_sys, DEL_NU, del_t)
     noise = np.random.default_rng(seeds['noise']).normal(scale=sigma,
@@ -400,7 +474,7 @@ def make_mock(shape=MOCK_SHAPE, seed=0, beam_fwhm=BEAM_FWHM, beam_nu_ref=None,
     config = dict(shape=list(shape), seed=seed, seeds=seeds,
                   beam_fwhm=beam_fwhm, beam_nu_ref=beam_nu_ref,
                   beam_index=beam_index, systematic=systematic,
-                  sys_kwargs=sys_kwargs if systematic else {},
+                  sys_kwargs=sys_kwargs,
                   t_sys=t_sys, del_t=del_t, del_nu=DEL_NU, noise_rms=sigma,
                   foregrounds=bool(foregrounds),
                   footprint=footprint if isinstance(footprint, dict) else
@@ -428,9 +502,9 @@ def load_mock(path):
                              index=config['beam_index'], pix_deg=PIX_DEG)
     sys_basis = None
     if config['systematic'] is not None:
-        _, sys_basis, _ = systematic_cube(config['systematic'], grid,
-                                          config['seeds']['systematic'],
-                                          **config['sys_kwargs'])
+        _, sys_basis, _, _ = systematics_cube(config['systematic'], grid,
+                                              config['seeds']['systematic'],
+                                              config['sys_kwargs'])
     mask = np.broadcast_to(arrays.pop('mask')[:, :, None], shape).astype(float)
     return Mock(grid=grid, mask=mask, beam=beam, sys_basis=sys_basis,
                 g_true=arrays.pop('g_true', None), config=config, **arrays)

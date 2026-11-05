@@ -122,3 +122,75 @@ def test_chain_runs_and_is_reproducible(mock):
     assert np.array_equal(a.pk, b.pk)
     assert np.array_equal(a.F, b.F)
     assert a.signal_mean.shape == mock.shape
+
+
+# ---------------------------------------------------------------------------
+# Several systematics at once
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope='module')
+def mock_all():
+    return make_mock(SMALL, seed=5, systematic='all')
+
+
+def test_all_systematics_sum_and_keep_their_streams(mock_all, mock):
+    """'all' is the three summed; each draws from a stream of its own."""
+    assert mock_all.config['systematic'] == ['groundspill', 'onef', 'leakage']
+    assert np.array_equal(mock_all.hi, mock.hi)
+    assert np.array_equal(mock_all.noise, mock.noise)
+    two = make_mock(SMALL, seed=5, systematic=['groundspill', 'leakage'])
+    parts_all = mock_all.sys_basis.split(mock_all.g_true)
+    parts_two = two.sys_basis.split(two.g_true)
+    for name in ('groundspill', 'leakage'):           # dropping 1/f moves neither
+        assert np.array_equal(parts_all[name], parts_two[name])
+    assert make_mock(SMALL, seed=5, systematic='groundspill,onef,leakage'
+                     ).config['systematic'] == mock_all.config['systematic']
+
+
+def test_all_systematics_cube_matches_basis(mock_all):
+    """Everything but ground spill's smooth spill (outside the basis, by
+    design) is the composite basis applied to g_true."""
+    smooth = make_mock(SMALL, seed=5, systematic='all',
+                       sys_kwargs={'groundspill': {'spill_level': 0.0}})
+    obs = smooth.mask > 0
+    recon = smooth.sys_basis.cube(smooth.g_true)
+    assert np.allclose(recon[obs], smooth.systematic[obs], rtol=0, atol=1e-12)
+    assert smooth.config['sys_kwargs']['leakage']['rm'] == 1000.0
+
+
+def test_all_systematics_round_trip(mock_all, tmp_path):
+    path = tmp_path / 'all.npz'
+    mock_all.save(path)
+    back = load_mock(path)
+    assert back.sys_basis.names == mock_all.sys_basis.names
+    g = np.random.default_rng(0).normal(size=back.sys_basis.n_params)
+    assert np.allclose(back.sys_basis.apply(g), mock_all.sys_basis.apply(g))
+
+
+def test_unknown_systematic_is_refused():
+    with pytest.raises(ValueError, match='unknown systematic'):
+        make_mock(SMALL, systematic='ground_spill')
+    with pytest.raises(ValueError, match='keyed by name'):
+        make_mock(SMALL, systematic='all', sys_kwargs={'rms': 1e-3})
+
+
+def test_composite_basis_is_consistent(mock_all):
+    """apply/adjoint are transposes and gram() is U^T U, cross terms too."""
+    b = mock_all.sys_basis
+    rng = np.random.default_rng(1)
+    x, y = rng.normal(size=b.n_params), rng.normal(size=b.n_params)
+    v = rng.normal(size=int(np.prod(SMALL)))
+    assert np.isclose(b.apply(x) @ v, x @ b.adjoint(v))
+    assert np.isclose(x @ b.gram() @ y, b.apply(x) @ b.apply(y))
+    ov = b.overlap()
+    assert np.allclose(np.diag(ov), 1) and np.allclose(ov, ov.T)
+
+
+def test_composite_overlap_flags_a_duplicate():
+    from imgibbs import CompositeBasis, groundspill_basis, leakage_basis
+    from imgibbs.mock import mock_grid
+    grid = mock_grid(SMALL)
+    gs = groundspill_basis(grid.freqs, SMALL)
+    lk = leakage_basis(grid.freqs, SMALL)
+    ov = CompositeBasis([gs, gs, lk], ['a', 'b', 'c']).overlap()
+    assert np.isclose(ov[0, 1], 1.0)

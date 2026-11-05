@@ -83,7 +83,7 @@ that builds a mock does.
 ```python
 from imgibbs import make_mock
 
-mock = make_mock(seed=0, beam_fwhm=1.5, systematic='groundspill')
+mock = make_mock(seed=0, beam_fwhm=1.5, systematic='all')
 mock.cube        # what the sampler sees, K; flagged voxels exactly 0
 mock.hi          # the answer
 print(mock.summary())
@@ -94,12 +94,16 @@ print(mock.summary())
 | H I: lognormal density, H I bias, linear RSD | `fastbox.tracers.generate_hi_mock` |
 | foreground: synchrotron + point sources, Santos et al. (2005) angular spectra, a power law per pixel with a varying index, plus the CMB | `fastbox.foregrounds.ForegroundModel` |
 | beam: Gaussian, FWHM ∝ 1/ν | `imgibbs.gaussian_beam` |
-| systematic: ground spill, 1/f or polarisation leakage | `imgibbs.systematics` |
+| systematics: ground spill, 1/f, polarisation leakage, or any combination (`'all'`) | `imgibbs.systematics` |
 | noise: `T_sys / sqrt(dnu dt)`, 16 K, 1000 s | — |
 | footprint: a tilted drift-scan band, ~63% of the map | `imgibbs.drift_footprint` |
 
-Each term has its own seed, spawned from one master seed, so switching the
-systematic off leaves the H I, foreground and noise untouched. FastBox draws
+Each term has its own seed, spawned from one master seed, and each
+systematic its own stream within that, so switching any of them off leaves
+the rest untouched. With several systematics `mock.sys_basis` is a
+`CompositeBasis`; its `overlap()` says which of them the data can tell apart.
+On this band ground spill and leakage at RM 1000 cannot be told apart (they
+overlap at 0.99), so only their sum is measurable. FastBox draws
 from NumPy's global generator; a mock saves and restores it, so building one
 never moves a chain's random stream. `Mock.save` / `load_mock` round-trip it.
 
@@ -121,15 +125,16 @@ jupyter lab notebooks/1_end_to_end.ipynb
 
 # The same chain as a batch job (writes the mock beside the traces)
 python scripts/run_gibbs.py 6 --n-samples 2000 --seed 1 --out outputs/end_to_end \
-    --mock-beam-fwhm 1.5 --mock-systematic groundspill --beam-fwhm 1.5 --groundspill
+    --mock-beam-fwhm 1.5 --mock-systematic all \
+    --beam-fwhm 1.5 --groundspill --onef --leakage
 sbatch scripts/submit_gibbs.sh 6 --n-samples 2000
 
 # The systematics blocks, one at a time
 jupyter lab notebooks/2_systematics.ipynb
 ```
 
-`--mock-*` options describe the data; `--beam-*` and `--groundspill` describe
-the model. One sample takes ~4 s on this grid without a beam and ~10 s with
+`--mock-*` options describe the data; `--beam-*`, `--groundspill`, `--onef`
+and `--leakage` describe the model. One sample takes ~4 s on this grid without a beam and ~10 s with
 one; the notebook's default 300 samples is about an hour.
 
 ---
@@ -154,10 +159,13 @@ is usually a smaller and more structured thing than the systematic as a whole.
 
 An instrumental systematic can be sampled as a fourth block,
 `d = w * (Us s + Uf f + Ug g) + n`, where `Ug` is a fixed low-rank basis and
-`g` a short vector of amplitudes. Ground spill is implemented:
+`g` a short vector of amplitudes. Ground spill, 1/f and leakage are
+implemented, alone or together (`imgibbs.CompositeBasis` stacks them into one
+`g`):
 
 ```bash
 python scripts/run_gibbs.py 6 --mock-systematic groundspill --groundspill --gs-period 17.5
+python scripts/run_gibbs.py 6 --mock-systematic all --groundspill --onef --leakage
 ```
 
 Two measured facts shape the whole thing, and both are worth knowing before

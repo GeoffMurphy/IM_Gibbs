@@ -469,6 +469,102 @@ class TemplateBasis:
         return self.apply(g).reshape(self.shape)
 
 
+class CompositeBasis:
+    """Several systematic blocks sampled as one.
+
+    ``g`` is the concatenation of each part's amplitudes, flattened, so
+    ``g_shape`` is ``(n_params,)``; :meth:`split` cuts it back into the parts'
+    own shapes. The Gram matrix is assembled block by block, cross terms
+    included -- they are what decides whether two systematics can be told
+    apart (see :meth:`overlap`).
+
+    Parameters
+    ----------
+    parts : sequence of SystematicBasis or TemplateBasis
+    names : sequence of str, optional
+    """
+
+    def __init__(self, parts, names=None):
+        self.parts = list(parts)
+        if not self.parts:
+            raise ValueError('a CompositeBasis needs at least one part')
+        shapes = {tuple(p.shape) for p in self.parts}
+        if len(shapes) != 1:
+            raise ValueError(f'parts are on different grids: {shapes}')
+        self.shape = shapes.pop()
+        self.names = (list(names) if names is not None
+                      else [f'part{i}' for i in range(len(self.parts))])
+        if len(self.names) != len(self.parts):
+            raise ValueError('one name per part')
+        edges = np.cumsum([0] + [p.n_params for p in self.parts])
+        self.slices = [slice(a, b) for a, b in zip(edges[:-1], edges[1:])]
+
+    @property
+    def n_params(self):
+        return self.slices[-1].stop
+
+    @property
+    def g_shape(self):
+        return (self.n_params,)
+
+    def split(self, g):
+        """``g`` as a dict of each part's amplitudes, in its own shape."""
+        g = np.asarray(g).ravel()
+        return {n: g[sl].reshape(p.g_shape) for n, p, sl in
+                zip(self.names, self.parts, self.slices)}
+
+    def apply(self, g):
+        g = np.asarray(g).ravel()
+        return sum(p.apply(g[sl]) for p, sl in zip(self.parts, self.slices))
+
+    def adjoint(self, y):
+        return np.concatenate([np.asarray(p.adjoint(y)).ravel()
+                               for p in self.parts])
+
+    def _cross(self, a, b):
+        if isinstance(a, SystematicBasis) and isinstance(b, SystematicBasis):
+            return np.kron(a.spatial @ b.spatial.T, a.spectral @ b.spectral.T)
+        cols = [np.asarray(a.adjoint(b.apply(e))).ravel()
+                for e in np.eye(b.n_params)]
+        return np.array(cols).T
+
+    def gram(self):
+        out = np.zeros((self.n_params, self.n_params))
+        for i, (a, sa) in enumerate(zip(self.parts, self.slices)):
+            out[sa, sa] = a.gram()
+            for b, sb in zip(self.parts[i + 1:], self.slices[i + 1:]):
+                block = self._cross(a, b)
+                out[sa, sb] = block
+                out[sb, sa] = block.T
+        return out
+
+    def cube(self, g):
+        return self.apply(g).reshape(self.shape)
+
+    def overlap(self, weights=None):
+        """Largest cosine of the principal angles between each pair of parts.
+
+        1 means some combination of one part's templates is exactly a
+        combination of the other's: the data constrain their sum along that
+        direction, and only the prior splits it. ``weights`` (a flattened
+        mask) restricts the inner product to observed voxels.
+        """
+        w = (np.ones(int(np.prod(self.shape))) if weights is None
+             else np.asarray(weights, float).ravel())
+        keep = w > 0
+        q = []
+        for p in self.parts:
+            t = np.array([p.apply(e) for e in np.eye(p.n_params)])[:, keep]
+            q.append(np.linalg.qr(t.T)[0])
+        k = len(self.parts)
+        out = np.eye(k)
+        for i in range(k):
+            for j in range(i + 1, k):
+                out[i, j] = out[j, i] = np.linalg.svd(
+                    q[i].T @ q[j], compute_uv=False)[0]
+        return out
+
+
 def project_out_beamed(cube, transfer, fg_basis, min_transfer=1e-3):
     """Remove from ``cube`` the part ``B Uf f`` can fit, at every ``k_perp``.
 

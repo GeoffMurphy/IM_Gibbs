@@ -36,23 +36,24 @@ T_sys    = 16 K,  del_nu = 0.208984 MHz,  del_t = 1000 s
 - **Voxels** 8.59 x 8.59 x 1.02 Mpc — strongly anisotropic, which is exactly
   why a cubic `box_dims` (the old `(232, 232, 232)`) was wrong: it mismaps every
   mode to the wrong |k| bin.
-- **Modes per bin** `[898, 12474, 106814, 209276, 454834]`, `k` from 0.0447 to
-  3.129 Mpc⁻¹.
+- **Modes per bin** `[934, 13200, 108186, 209190, 452778]` on the mock
+  footprint (`drift_footprint`), `k` from 0.0460 to 3.129 Mpc⁻¹. (On the
+  earlier MeerKLASS-shaped footprint: `[898, 12474, 106814, 209276, 454834]`
+  from 0.0447.)
 - **Units** everything in K, so `S` is in K². `HITracer.signal_amplitude()`
   returns mK — the generation notebook divides by 1000. Getting this wrong
   misscales `S` by 10⁶.
 - **`box_dims` describes the FFT grid** (21.0 x 13.5 deg), *not* the ~200 deg²
   scanned footprint. The footprint mask is handled by the `w` weights.
 
-`tests/test_imgibbs.py` pins the geometry and the binning to the values the
-shipped `S_starting_point_cropped.npy` was generated with, and
-`scripts/run_gibbs.py` refuses to start if the two disagree.
+`tests/test_imgibbs.py` pins the geometry and the binning on the mock
+footprint. `S` is built on the bins each run derives, so it cannot be
+attached to the wrong wavenumbers.
 
 > **Note on an earlier draft of this document.** It quoted the grid as
 > (70, 45, 500) with `box_dims = (558.4, 359.0, 494.7)`. That was the
 > 500-channel configuration; the working grid has been the 250-channel cut
-> since 2026-08-24. The numbers above are read back from
-> `data/S_starting_point_cropped_meta.json`.
+> since 2026-08-24.
 
 ---
 
@@ -1724,8 +1725,51 @@ runtime at once, and is a much cheaper fix than reworking `S_samp`.
   0.25 (bin 2 noise-dominated after the beam correction). **Not converged:**
   tau 5–15 in bins 0–2 (a lower bound on 200 draws; bin 2 drifts 1.0 → 0.75
   → 0.85 across the chain), so bins 0 and 2 at ~0.8 are not yet a finding.
-  2000-sample chains from 0.1x / 1x / 10x the expected power are running on
-  ilifu.
+- **Start-scale test, same configuration, 2000 samples, burn 300** (ilifu,
+  seed 1, `S` started at 0.1x / 1x / 10x the expected power). Bins 0–2 reach
+  the same posterior from all three starts (median ratio x10/x0.1: 1.003,
+  1.000, 1.000; the 0.1x and 10x traces first cross at samples 41, 279 and
+  958). Bins 3–4 stay where they start (ratio 4.3 and 22), as the Fisher
+  forecast said. Posterior / true, bins 0–2: **0.86 (0.75–0.98), 1.08
+  (1.01–1.17), 0.82 (0.76–0.88)**; tau 40 / 32 / 22, ESS 43 / 54 / 78.
+- **Bin 2's 0.82 is the truth being anisotropic, not the sampler.** With a
+  beam, `S` is drawn from the beam-visible modes (low `k_perp`, so high
+  `k_par`). FastBox's H I is not isotropic within a bin: RSD and the
+  `sigma_nl` damping depend on `mu`, and in bin 2 the visible modes carry
+  **0.774x** the bin-average power (0.76 ± 0.03 over six other
+  realisations; bin 1 1.01, bin 3 0.82). Against that, bin 2 recovers
+  **1.06**. Bin 0 has every mode visible, so its 0.86 stands (1.3 sigma
+  low, ESS 43). The end-to-end notebook now plots both truths. Comparing
+  the two is a test of the mock's isotropy, not of the method. On the sky
+  the same applies: a beamed, collapsed `S` step measures the power of the
+  modes the beam leaves, which in a bin with anisotropic power is not the
+  bin average.
+- **All three systematics at once.** `make_mock(systematic='all')` sums
+  ground spill, 1/f and leakage, each from its own random stream;
+  `imgibbs.CompositeBasis` stacks their template blocks into one `g`
+  (`run_gibbs.py --groundspill --onef --leakage`). The model's 1/f block is
+  deflated against the foreground span; the injected 1/f is not.
+  - **Ground spill and leakage are degenerate on this band**: overlap
+    (largest principal-angle cosine over the footprint) 0.993. At RM 1000
+    the leakage completes 3.0 cycles over 971–1023 MHz, the 17.5 MHz ripple
+    2.97, and their spatial templates share the constant and a gradient. The
+    data fix the sum; the prior splits it. The deflated 1/f overlaps each at
+    ~0.74. The injected 1/f is 99% inside the foreground span (1 mK rms,
+    0.011 mK after a 6-mode smooth fit).
+  - End-to-end notebook, beam + all three in mock and model, 300 samples,
+    burn 100: **35 s/sample** (median 88 matvecs, against 32 with ground
+    spill alone). Systematics recovered to 6% rms (0.09 of 1.49 mK, smooth
+    part removed); ground spill + leakage sum to 8%. Posterior / true, bins
+    0–2: 1.40 (+1.09/−0.26), 1.06, 0.82 (1.40, 1.05, 1.05 against the
+    visible-mode truth). **Bin 0 starts at ~4x and takes ~180 samples to come
+    down**, so burn 100 leaves part of the descent in (tau 25, ESS 8). The
+    likely mechanism is the 0.7% of the leakage the ripple does not span:
+    it sits at bin 0's `k_par`, is held only by the 10 mK prior, and trades
+    against the signal there (cf. "The `S` step steals from `g`").
+    Modelling ground spill alone on the same mock puts bin 0 at 33x after 25
+    samples.
+  - Start-scale chains (0.1x / 1x / 10x, 2000 samples) for this
+    configuration are running on ilifu.
 - Which bins the data can constrain is now estimated per run: a Fisher
   forecast `sigma_P/P` from the per-mode data-to-prior ratio
   `q = <w> |B|^2 P / N`. With the 1.5 deg beam it gives 0.13 / 0.11 / 0.10 /
