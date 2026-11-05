@@ -11,8 +11,9 @@ So this runs entirely on a **synthetic cube with a known answer**::
 
     d = HI (simulated) + foreground + ground spill + noise
 
-built on the live (70, 45, 250) grid with the real footprint mask, and samples
-it twice with identical seeds:
+built on the live (70, 45, 250) grid from ``imgibbs.mock`` -- FastBox H I and
+foregrounds on a drift-scan footprint -- and samples it twice with identical
+seeds:
 
   * ``--arm off``  : the published three-block model, s + f
   * ``--arm on``   : with the ground-spill block, s + f + g
@@ -40,8 +41,8 @@ Usage
     python scripts/systematics_injection.py --summarise
 
 Use ``--quick`` to cut the frequency axis to 64 channels for a smoke test;
-the k-binning then no longer matches the shipped ``S``, so a quick run proves
-the plumbing and nothing about the science.
+the k-bins are then those of a different grid, so a quick run proves the
+plumbing and nothing about the science.
 """
 
 from __future__ import annotations
@@ -63,13 +64,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from imgibbs import (                                          # noqa: E402
     Us, best_fit_amplitudes, bin_it, construct_A, construct_b,
     construct_preconditioner, groundspill_basis, groundspill_cube,
-    kbins_from_crop, leakage_basis, load, load_l2021_cube, onef_basis,
-    period_scan, realise, ripple_wavenumber, survey_grid,
+    kbins_from_crop, leakage_basis, onef_basis,
+    period_scan, realise, ripple_wavenumber,
     foreground_covariance_sampler as FCS,
     signal_covariance_sampler as SCS,
 )
 
-CROP = (slice(33, 103), slice(14, 59), slice(0, 250))
+from imgibbs.mock import (                                     # noqa: E402
+    MOCK_SHAPE, expected_hi_power, injection_base, mock_grid,
+)
+from imgibbs.sampler import signal_prior                       # noqa: E402
+
 N_K_BINS = 5
 T_SYS, DEL_T = 16.0, 1000.0
 DEL_NU = (1712.0 - 856.0) / 4096 * 1e6      # Hz
@@ -112,8 +117,8 @@ def parse_args():
                         'and leakage do not and recovered 71-90%%. See '
                         'docs/STATUS.md.')
     p.add_argument('--fix-S', action='store_true',
-                   help='DIAGNOSTIC, not an analysis. Hold S at the shipped '
-                        'prior (the true simulated H I power) instead of '
+                   help='DIAGNOSTIC, not an analysis. Hold S at its starting '
+                        'value (the expected H I power) instead of '
                         'sampling it. On a real survey you do not know P(k) in '
                         'advance, so this is not a usable configuration -- it '
                         'exists to isolate the S feedback: S inflates in the '
@@ -205,14 +210,16 @@ def build_basis(args, freqs, shape, fg_basis):
 # ---------------------------------------------------------------------------
 
 def build_truth(args):
-    """Simulated H I + foreground + ground spill + noise, on the real mask.
+    """Simulated H I + foreground + ground spill + noise, on a mock footprint.
 
-    The foreground is the least-squares Legendre model of the *real* L2021
-    cube, so its amplitude and spectral shape are realistic rather than
-    invented -- it is ~140x the H I rms, which is the regime that makes this
-    problem hard. Only the H I, the spill and the noise are synthetic.
+    H I, foreground and footprint come from :func:`imgibbs.mock.injection_base`
+    (FastBox, no beam); the systematic and the noise are drawn here.
+
+    Runs before 2026-11 used the 6-mode Legendre projection of the real L2021
+    cube as the foreground (~140x the H I rms) and its real footprint; the
+    FastBox foreground is ~40x. Both lie inside the 6-mode span.
     """
-    crop = CROP if not args.quick else (CROP[0], CROP[1], slice(0, 64))
+    shape = MOCK_SHAPE if not args.quick else MOCK_SHAPE[:2] + (64,)
     rng = np.random.default_rng(TRUTH_SEED)
     # The control arm sees the same H I, foreground and noise realisation --
     # same TRUTH_SEED -- with the systematic switched off, so any difference
@@ -220,20 +227,12 @@ def build_truth(args):
     ripple_rms = 0.0 if args.arm == 'clean' else args.ripple_rms
     spill_level = 0.0 if args.arm == 'clean' else args.spill_level
 
-    real = load_l2021_cube()[crop]
-    shape = real.shape
-    grid = survey_grid(crop, shape)
+    grid = mock_grid(shape)
+    hi, foreground, flag = injection_base(shape, TRUTH_SEED)
 
-    flag = (real != 0).astype(float)
-
-    # Foreground: project the real cube onto the same Legendre basis the
-    # sampler uses. Keeps the foreground realistic without needing a model.
     n_freq = shape[2]
     basis = np.linalg.qr(np.polynomial.legendre.legvander(
         np.linspace(-1, 1, n_freq), args.n_modes - 1))[0].T
-    foreground = ((real.reshape(-1, n_freq) @ basis.T) @ basis).reshape(shape)
-
-    hi = load('Fastbox_cube_cropped.npy')[:, :, :n_freq]
 
     if ripple_rms == 0.0 and spill_level == 0.0:
         # Control arm: build the basis anyway so g_true has a shape, but
@@ -258,7 +257,7 @@ def build_truth(args):
     noise = rng.normal(scale=noise_rms, size=shape)
 
     cube = (hi + foreground + spill + noise) * flag
-    return dict(cube=cube, shape=shape, grid=grid, crop=crop, flag=flag,
+    return dict(cube=cube, shape=shape, grid=grid, flag=flag,
                 hi=hi, foreground=foreground, spill=spill,
                 basis=sys_basis, g_true=g_true, noise_rms=noise_rms)
 
@@ -318,14 +317,12 @@ def run_arm(args):
               f'mode; its power spreads across bins')
     print(f'k-bins       : ' + ', '.join(f'{k:.4f}' for k in sig_k))
 
-    # S: the shipped starting point matches only the full 250-channel grid.
-    if args.quick:
-        S = np.full(int(np.prod(shape)), 1e30)
-    else:
-        S = load('S_starting_point_cropped.npy')
-        if S.size != np.prod(shape):
-            raise SystemExit(f'S has {S.size} entries, grid has '
-                             f'{np.prod(shape)} voxels')
+    # S starts at the expected H I power under the fiducial cosmology, from
+    # realisations independent of the injected one. (Before 2026-11 it was
+    # the power of the injected realisation itself: every chain started at
+    # the answer.)
+    pk0, _ = expected_hi_power(grid, sig_k, idxs)
+    S = signal_prior(pk0, idxs, kbin_meta['dc_index'])
 
     n_freq = shape[2]
     evecs = np.linalg.qr(np.polynomial.legendre.legvander(
@@ -435,6 +432,7 @@ def run_arm(args):
                 fix_S=bool(args.fix_S), thin=args.thin, n_modes=args.n_modes, n_samples=args.n_samples,
                 burn=args.burn, seed=args.seed, tol=args.tol,
                 quick=args.quick, cube_shape=list(shape),
+                truth_seed=TRUTH_SEED,
                 box_dims=list(box_dims), sig_k=sig_k.tolist(),
                 ripple_k=float(k_ripple), ripple_bin=hit,
                 ripple_rms=args.ripple_rms, spill_level=args.spill_level,

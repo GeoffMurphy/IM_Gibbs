@@ -40,12 +40,11 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from types import SimpleNamespace  # noqa: E402
-
-from imgibbs import kbins_from_crop, load, load_l2021_cube, survey_grid  # noqa: E402
-
-CROP = (slice(33, 103), slice(14, 59), slice(0, 250))
+from imgibbs import kbins_from_crop  # noqa: E402
+from imgibbs.mock import MOCK_SHAPE, injection_base, mock_grid  # noqa: E402
 N_K_BINS = 5
+#: Must match scripts/systematics_injection.py, which also records it per run.
+TRUTH_SEED = 20260923
 
 # Categorical hues, assigned in fixed order and never cycled.
 COLOURS = {'clean': '#2a78d6', 'off': '#eb6834', 'on': '#1baf7a',
@@ -135,25 +134,15 @@ def discover(out):
 def truth_cubes(meta):
     """Rebuild the H I cube and footprint mask the run was built on.
 
-    Only ``box_dims`` is ever read off the grid, and every run records the
-    value it actually used in its metadata. So when pyccl is missing -- it is
-    the one heavyweight dependency and is not needed to *read* a finished run
-    -- fall back to the recorded value rather than refusing to report. When
-    pyccl is present the two are cross-checked, which is a free guard against
-    a cosmology drift between running and reporting.
+    The same :func:`imgibbs.mock.injection_base` call, with the same seed, as
+    ``systematics_injection.py`` made. ``box_dims`` is cross-checked against
+    the value the run recorded, a free guard against a cosmology drift
+    between running and reporting.
     """
-    real = load_l2021_cube()[CROP]
-    flag = (real != 0).astype(float)
-    hi = load('Fastbox_cube_cropped.npy')[:, :, :real.shape[2]]
+    shape = tuple(meta.get('cube_shape', MOCK_SHAPE))
+    hi, _, flag = injection_base(shape, meta.get('truth_seed', TRUTH_SEED))
+    grid = mock_grid(shape)
     recorded = meta.get('box_dims')
-    try:
-        grid = survey_grid(CROP, real.shape)
-    except ModuleNotFoundError as exc:
-        if recorded is None:
-            raise
-        print(f'  [grid] {exc.name} unavailable; using the box_dims recorded '
-              f'by the run: {tuple(round(v, 1) for v in recorded)} Mpc')
-        return hi, flag, SimpleNamespace(box_dims=np.array(recorded, float))
     if recorded is not None and not np.allclose(grid.box_dims, recorded,
                                                 rtol=1e-10):
         raise SystemExit(

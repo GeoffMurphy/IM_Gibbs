@@ -3,15 +3,16 @@
 
 The comparison only means anything with an injected signal (see "The
 comparison cannot work without injection" in docs/STATUS.md), so this builds
-synthetic cubes on the live grid and mask::
+synthetic cubes on the live grid::
 
     d = w * (B (HI + FG) + n)
 
-HI is the simulated FastBox cube shipped in ``data/``; FG is the least-squares
-Legendre model of the real L2021 cube (same as ``systematics_injection.py``),
-so its amplitude and spectral shape are realistic; ``B`` is the beam; the
-noise has the sampler's own ``T_sys``. A ``control`` mock is the same sky and
-noise with no beam.
+HI, FG and the footprint ``w`` come from ``imgibbs.mock.injection_base``
+(FastBox), as in ``systematics_injection.py``; ``B`` is the beam; the noise
+has the sampler's own ``T_sys``. A ``control`` mock is the same sky and noise
+with no beam. (For a Gaussian beam, ``run_gibbs.py --mock-beam-fwhm`` builds
+the same kind of mock in one step; this script is for tabulated beams and
+for the beam-off control.)
 
 Build both mocks, with a Gaussian beam by default::
 
@@ -49,14 +50,13 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from imgibbs import (                                          # noqa: E402
-    beam_from_spec, beam_run_args, bin_it, data_path, kbins_from_crop, load,
-    load_l2021_cube,
+    beam_from_spec, beam_run_args, bin_it, kbins_from_crop,
 )
+from imgibbs.mock import MOCK_SHAPE, injection_base, mock_grid  # noqa: E402
 import imgibbs.grid as grid_mod                                # noqa: E402
 
-CROP = (slice(33, 103), slice(14, 59), slice(0, 250))
+CROP = (slice(None), slice(None), slice(0, MOCK_SHAPE[2]))
 N_K_BINS = 5
-N_MODES = 6
 T_SYS = 16.0
 DEL_T = 1000.0
 DEL_NU = (1712.0 - 856.0) / 4096 * 1e6
@@ -69,18 +69,9 @@ def freqs_for(crop):
     return grid_mod.NU0 + np.arange(grid_mod.CH0, grid_mod.CH1)[crop[2]] * dnu
 
 
-def legendre(n_freq, n_modes):
-    return np.linalg.qr(np.polynomial.legendre.legvander(
-        np.linspace(-1, 1, n_freq), n_modes - 1))[0].T
-
-
 def build(args):
-    real = load_l2021_cube()[CROP]
-    shape = real.shape
-    flag = (real != 0).astype(float)
-    ev = legendre(shape[2], N_MODES)
-    fg = ((real.reshape(-1, shape[2]) @ ev.T) @ ev).reshape(shape)
-    hi = load('Fastbox_cube_cropped.npy')[:, :, :shape[2]]
+    shape = MOCK_SHAPE
+    hi, fg, flag = injection_base(shape, TRUTH_SEED)
     spec = (dict(table=os.path.abspath(args.beam_table)) if args.beam_table
             else dict(fwhm=args.beam_fwhm, index=args.beam_index,
                       nu_ref=args.beam_nu_ref))
@@ -115,7 +106,7 @@ def build(args):
     Path(args.out, 'beam_args.txt').write_text(' '.join(beam_run_args(spec))
                                                + '\n')
     meta = dict(beam=spec, truth_seed=TRUTH_SEED,
-                n_modes_fg=N_MODES, hi_rms_K=float(hi.std()),
+                hi_rms_K=float(hi.std()),
                 fg_rms_K=float(fg[flag > 0].std()),
                 groundspill=(None if gs is None else dict(
                     ripple_rms_K=args.groundspill,
@@ -138,9 +129,8 @@ def true_power(hi, sig_k, idxs):
 
 def summarise(args):
     hi = np.load(os.path.join(args.out, 'truth_hi.npy'))
-    real = load_l2021_cube()[CROP]
-    meta = json.loads(data_path('S_starting_point_cropped_meta.json').read_text())
-    sig_k, idxs, _ = kbins_from_crop(real, tuple(meta['box_dims']),
+    real = np.load(os.path.join(args.out, 'mock_control.npy'))
+    sig_k, idxs, _ = kbins_from_crop(real, mock_grid(real.shape).box_dims,
                                      max_bins=N_K_BINS)
     mock = json.loads(Path(args.out, 'mock_meta.json').read_text())
     spec = mock.get('beam') or dict(table=mock['beam_table'])

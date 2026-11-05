@@ -41,18 +41,12 @@ mkdir -p logs
 
 # --- Environment -----------------------------------------------------------
 # IMGIBBS_VENV lets you point at a different interpreter without editing this
-# file. The default is the SKA environment, which already carries numpy,
-# scipy, pyccl and tqdm -- imgibbs needs nothing else. fastbox is optional:
-# imgibbs.grid only imports it to CHECK that the cosmology has not drifted,
-# and skips the check when it is absent.
+# file. The default is the SKA environment, which carries numpy, scipy, pyccl
+# and tqdm; the mocks also need FastBox
+# (pip install git+https://github.com/GeoffMurphy/FastBox.git).
 VENV=${IMGIBBS_VENV:-$HOME/ska/.venv}
 PYTHON="$VENV/bin/python"
 [ -x "$PYTHON" ] || { echo "No interpreter at $PYTHON (set IMGIBBS_VENV)" >&2; exit 1; }
-
-# The MeerKLASS cubes are not redistributed with the repository. On ilifu they
-# already exist under the Sampling Nb archive; IMGIBBS_DATA points imgibbs.data
-# at whatever directory holds them.
-export IMGIBBS_DATA=${IMGIBBS_DATA:-$PWD/data}
 
 # Keep BLAS threads equal to the allocation. Left unset, OpenBLAS grabs every
 # core on the node and fights the other arms for them.
@@ -65,7 +59,6 @@ OUT=${IMGIBBS_OUT:-outputs/${SYSTEMATIC}_run}
 echo "host        : $(hostname)"
 echo "job         : ${SLURM_JOB_ID:-none}  cpus=${SLURM_CPUS_PER_TASK:-?}"
 echo "python      : $PYTHON"
-echo "data        : $IMGIBBS_DATA"
 echo "systematic  : $SYSTEMATIC"
 echo "arm         : $ARM"
 echo "out         : $OUT"

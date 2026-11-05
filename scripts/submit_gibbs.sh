@@ -31,9 +31,8 @@ mkdir -p logs
 #   source /path/to/venv/bin/activate
 #   module load python/3.12
 #
-# IMGIBBS_DATA must point at the directory holding L2021_polished_cube.npy if
-# it is not in ./data -- see README, "Data".
-# export IMGIBBS_DATA=/path/to/cubes
+# The data are a mock built in the run (README, "Mock data"); the environment
+# needs FastBox for that.
 
 echo "Running Gibbs sampling with ${N_MODES} foreground modes"
 python scripts/run_gibbs.py "${N_MODES}" "$@"

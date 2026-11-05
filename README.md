@@ -21,7 +21,7 @@ Optionally a chromatic primary beam `B` on the sky (signal and foreground, not
 the systematic): `d = w (B Us s + B Uf f + Ug g) + n`. See [Beam](#beam).
 
 Foregrounds are marginalised over rather than projected out. Measured against a
-PCA clean on the same cube, k-bins, estimator and truth, the sampler retains
+PCA clean on the same mock, k-bins, estimator and truth (no beam), the sampler retains
 substantially more signal at intermediate k — 0.86 against 0.46 at
 k = 0.37 Mpc⁻¹, 0.99 against 0.71 at k = 0.87 — so that loss does not have to
 be corrected for after the fact. **At the lowest bin the two are equivalent**
@@ -32,9 +32,13 @@ lowest k amounts to a projection. Centring it on zero instead
 (`--f-prior-mean zero`) leaks foreground into the signal there. See
 `docs/STATUS.md`, "The beam in the MODEL", finding 4.
 
-This version runs on the **real MeerKLASS L2021 footprint** — a non-cubic
-(70, 45, 250) grid with strongly anisotropic voxels (~8.6 x 8.6 x 1.0 Mpc) and
-an irregular survey mask. Earlier work used a cubic 72³ slice.
+Everything runs on **mock observations generated in the repository**
+(`imgibbs.mock`): FastBox H I and foregrounds, ground spill, 1/f and
+polarisation leakage from the equations in `imgibbs.systematics`, a chromatic
+beam and radiometer noise, on a drift-scan footprint. The grid is the MeerKAT
+L band at 970.9–1023.0 MHz — a non-cubic (70, 45, 250) box with strongly
+anisotropic voxels (~8.6 x 8.6 x 1.0 Mpc). Nothing has to be downloaded.
+Earlier work used a cubic 72³ slice.
 
 > **Looking for the paper?** The example notebook and cubic-grid sampler behind
 > [Murphy et al. (2026)](https://scixplorer.org/abs/2026MNRAS.551g1503M/abstract) are
@@ -51,13 +55,10 @@ cd IM_Gibbs
 pip install -e .
 ```
 
-### Installing FastBox
+`pip install -e .` pulls in FastBox, which generates the H I and foreground
+mocks. For the notebooks, `pip install -e ".[notebooks]"`.
 
-FastBox supplies the simulated H I cubes and the PCA filter.
-
-```bash
-pip install "git+https://github.com/GeoffMurphy/FastBox.git"
-```
+### FastBox
 
 That is a fork of [philbull/FastBox](https://github.com/philbull/FastBox),
 currently identical to upstream `main` (`883677f`). The fork exists as a pin,
@@ -72,68 +73,69 @@ module. Verified against this repository: the generation pipeline runs
 end-to-end and `HITracer.signal_amplitude()` reproduces the recorded
 `Tb_mK = 0.15048796349807` bit for bit.
 
-FastBox is only needed to *generate* cubes and to run the PCA benchmark. The
-sampler itself, and `imgibbs.grid`, work without it.
+The sampler itself (`imgibbs.run_chain`) does not import FastBox; everything
+that builds a mock does.
 
 ---
 
-## Data
+## Mock data
 
-The **simulated and derived products ship in `data/`** and are enough to
-inspect the priors and reproduce the k-binning:
+```python
+from imgibbs import make_mock
 
-| File | What it is |
-|---|---|
-| `Fastbox_cube_cropped.npy` | Simulated H I signal cube on this grid, in K |
-| `S_starting_point_cropped.npy` | Diagonal signal covariance, 787,500 entries, K² |
-| `S_starting_point_cropped_meta.json` | Geometry, k-bins and units of that run |
-| `Fastbox_Pk_cropped.npy` | Directly measured P(k) — the truth curve |
-| `Fastbox_PkSample_cropped.npy` | The inverse-gamma draw actually used for `S` |
-| `Fastbox_kbins_cropped.npy` | Bin centres `sig_k` |
-| `mock_ref_injection.npy` | Fixed injected mock, shared by both transfer-function arms |
-| `L2021_cropped_cube_meta.json` | Provenance of the observational crop |
-
-The **MeerKLASS L2021 observational cubes are not redistributed here.** They are
-collaboration data. To run the notebooks on the real data, put
-`L2021_polished_cube.npy` in `data/`, or point `IMGIBBS_DATA` at wherever you
-keep it:
-
-```bash
-export IMGIBBS_DATA=/path/to/cubes
+mock = make_mock(seed=0, beam_fwhm=1.5, systematic='all')
+mock.cube        # what the sampler sees, K; flagged voxels exactly 0
+mock.hi          # the answer
+print(mock.summary())
 ```
 
-It is built from `Nscan961_Tsky_cube_p0.3d_sigma4.0_iter2.fits` (MeerKLASS
-2021, 0.3 deg pixels), keeping FITS channels 550–1050 — a (133, 73, 500) cube
-in K. `imgibbs.load_l2021_cube()` raises a message saying exactly this if it
-cannot find it.
+| term | from |
+|---|---|
+| H I: lognormal density, H I bias, linear RSD | `fastbox.tracers.generate_hi_mock` |
+| foreground: synchrotron + point sources, Santos et al. (2005) angular spectra, a power law per pixel with a varying index, plus the CMB | `fastbox.foregrounds.ForegroundModel` |
+| beam: Gaussian, FWHM ∝ 1/ν | `imgibbs.gaussian_beam` |
+| systematics: ground spill, 1/f, polarisation leakage, or any combination (`'all'`) | `imgibbs.systematics` |
+| noise: `T_sys / sqrt(dnu dt)`, 16 K, 1000 s | — |
+| footprint: a tilted drift-scan band, ~63% of the map | `imgibbs.drift_footprint` |
+
+Each term has its own seed, spawned from one master seed, and each
+systematic its own stream within that, so switching any of them off leaves
+the rest untouched. With several systematics `mock.sys_basis` is a
+`CompositeBasis`; its `overlap()` says which of them the data can tell apart.
+On this band ground spill and leakage at RM 1000 cannot be told apart (they
+overlap at 0.99), so only their sum is measurable. FastBox draws
+from NumPy's global generator; a mock saves and restores it, so building one
+never moves a chain's random stream. `Mock.save` / `load_mock` round-trip it.
+
+The signal covariance starts at the *expected* H I power — the mean of
+independent realisations — not the power of the realisation in the data
+(`imgibbs.expected_hi_power`). It is built on the run's own k-bins, so it
+cannot be attached to the wrong wavenumbers.
+
+To sample a cube of your own, `run_gibbs.py --data cube.npy`: K, flagged voxels
+exactly zero, frequency last, starting at L-band channel 550 (`imgibbs.grid`).
 
 ---
 
 ## Quickstart
 
 ```bash
-# 1. Build the simulated cube and the signal-covariance starting point
-jupyter lab notebooks/1_generate_signal_cube.ipynb
+# The whole analysis: mock, sampling, results, and PCA + transfer function
+jupyter lab notebooks/1_end_to_end.ipynb
 
-# 2. Sample — in the notebook, or as a batch job
-jupyter lab notebooks/2_gibbs_sampling.ipynb
-python scripts/run_gibbs.py 6 --n-samples 500 --seed 42
-sbatch scripts/submit_gibbs.sh 6 --n-samples 500
+# The same chain as a batch job (writes the mock beside the traces)
+python scripts/run_gibbs.py 6 --n-samples 2000 --seed 1 --out outputs/end_to_end \
+    --mock-beam-fwhm 1.5 --mock-systematic all \
+    --beam-fwhm 1.5 --groundspill --onef --leakage
+sbatch scripts/submit_gibbs.sh 6 --n-samples 2000
 
-# 3. The PCA benchmark the sampler is compared against
-jupyter lab notebooks/3_pca_transfer_function.ipynb
+# The systematics blocks, one at a time
+jupyter lab notebooks/2_systematics.ipynb
 ```
 
-`run_gibbs.py` checks the grid it is running on against the metadata of the `S`
-it loaded, and refuses to start if they disagree:
-
-```
-S does not match this grid:
-  shape: S built on (70, 45, 250), this run is (70, 45, 200)
-  box_dims: S built on [601.1, 386.4, 254.4], this run is [610.1, 392.2, 204.5]
-```
-
-One sample takes ~4 s on this grid.
+`--mock-*` options describe the data; `--beam-*`, `--groundspill`, `--onef`
+and `--leakage` describe the model. One sample takes ~4 s on this grid without a beam and ~10 s with
+one; the notebook's default 300 samples is about an hour.
 
 ---
 
@@ -157,10 +159,13 @@ is usually a smaller and more structured thing than the systematic as a whole.
 
 An instrumental systematic can be sampled as a fourth block,
 `d = w * (Us s + Uf f + Ug g) + n`, where `Ug` is a fixed low-rank basis and
-`g` a short vector of amplitudes. Ground spill is implemented:
+`g` a short vector of amplitudes. Ground spill, 1/f and leakage are
+implemented, alone or together (`imgibbs.CompositeBasis` stacks them into one
+`g`):
 
 ```bash
-python scripts/run_gibbs.py 6 --groundspill --gs-period 17.5
+python scripts/run_gibbs.py 6 --mock-systematic groundspill --groundspill --gs-period 17.5
+python scripts/run_gibbs.py 6 --mock-systematic all --groundspill --onef --leakage
 ```
 
 Two measured facts shape the whole thing, and both are worth knowing before
@@ -206,13 +211,13 @@ python scripts/systematics_injection.py --arm on  --n-samples 120
 python scripts/systematics_injection.py --summarise
 ```
 
-It builds a synthetic cube — simulated H I, the real cube's Legendre
-foreground, ground spill, noise — on the live grid and samples it twice with
+It builds a synthetic cube — FastBox H I and foreground, ground spill, noise —
+on the live grid and samples it twice with
 identical seeds, differing only in whether the block is on. The block can only
 recover the part of the ripple the foreground does not already take; both
 scripts print that ceiling before they start.
 
-`notebooks/4_systematics.ipynb` shows the structure of the block — the
+`notebooks/2_systematics.ipynb` shows the structure of the block — the
 templates, the separability, and what a 6-mode clean leaves behind — without
 running the sampler.
 
@@ -274,16 +279,18 @@ data the model needs the beam's spectral structure, from a measured
 `--beam-table` for the right band. Getting its width 2% wrong did no
 measurable harm, but a measured beam from the wrong band (UHF on an L-band
 mock) still gave 4x in the lowest bin. `scripts/beam_injection.py` and
-`submit_beam_injection.sh` run the known-answer test. **Caveat:** the shipped
-`S_starting_point` is the power of the same simulated HI the mocks inject, so
-chains start at the answer; start with `--S-start-scale` (e.g. 0.1 and 10)
-and trust only the bins where both ends converge. On the injection mock that
+`submit_beam_injection.sh` run the known-answer test. **Caveat:** `S` starts
+at the expected H I power, which is within cosmic variance of the truth, so a
+chain that never moves still looks right; start with `--S-start-scale` (e.g.
+0.1 and 10) and trust only the bins where both ends converge. (Before 2026-11
+it started at the power of the injected realisation itself.) On the injection mock that
 is bins 0–3 without a beam and bins 0–2 with one; the top bin is prior in
 both. See `docs/STATUS.md`, "The beam in the MODEL".
 
 ### Disk
 
-`x_sample` traces are ~13 MB each, so a 500-sample chain is ~6.5 GB. `S` is
+`x_sample` traces are ~6.5 MB each, so a 500-sample chain is ~3.3 GB;
+`--save-x-every 0` skips them (the posterior-mean maps are written anyway). `S` is
 piecewise-constant over the k-bins, so `Pk_trace` plus the bin metadata
 reconstructs it exactly — writing the full cube each iteration costs another
 ~6 MB per sample for no extra information, and is now opt-in behind `--save-S`.
@@ -295,20 +302,20 @@ reconstructs it exactly — writing the full cube each iteration costs another
 
 ```
 imgibbs/
-  grid.py           CROP -> shape, frequencies, redshifts, box_dims
+  mock.py           mock observations: H I, foreground, beam, systematic, noise
+  sampler.py        the Gibbs chain, shared by run_gibbs.py and the notebooks
+  grid.py           channels + pixels -> frequencies, redshifts, box_dims
   kbins.py          radial k-binning and the P(k) estimator
   linear_system.py  A, b, and the block-diagonal preconditioner
   covariance.py     the inverse-gamma and inverse-Wishart draws
   systematics.py    instrumental systematics: the ground-spill block
   beam.py           chromatic primary beam B on the sky, Gaussian or measured
-  data.py           locating the input cubes
+  data.py           where optional inputs of your own go
 notebooks/
-  1_generate_signal_cube.ipynb     simulated H I cube + S starting point
-  2_gibbs_sampling.ipynb           the sampler, diagnostics, transfer function
-  3_pca_transfer_function.ipynb    PCA clean benchmark
-  4_systematics.ipynb              structure of the three systematics
+  1_end_to_end.ipynb        mock -> sampling -> results, against PCA + T(k)
+  2_systematics.ipynb       structure of the three systematics
 scripts/
-  run_gibbs.py              the sampling loop without the plots
+  run_gibbs.py              the end-to-end chain without the plots
   systematics_injection.py  systematics injection test, known answer
   systematics_report.py     tables and figures from a finished injection run
   pca_benchmark.py          PCA + transfer function, on the sampler's k-bins
@@ -325,23 +332,25 @@ docs/STATUS.md      what is settled, what is open, what is known to be wrong
 ### Why the geometry lives in one module
 
 `S` is a per-voxel array indexed by k-bins derived from `box_dims`. If the
-notebook that *builds* `S` and the notebook that *consumes* it disagree about
-the grid, the signal prior is silently attached to the wrong wavenumbers and
-the sampler produces plausible-looking nonsense with no error anywhere.
+code that *builds* `S` and the code that *consumes* it disagree about the
+grid, the signal prior is silently attached to the wrong wavenumbers and the
+sampler produces plausible-looking nonsense with no error anywhere.
 
-All three notebooks and the batch script therefore call the same
-`survey_grid(CROP, shape)`, and everything follows `CROP` — change the crop and
-the frequencies, redshifts and box dimensions move with it. `tests/` pins the
-result to the values the shipped `S` was generated with.
+The mocks, the notebooks and the scripts therefore all derive the geometry
+from `imgibbs.grid` (`mock_grid(shape)`), and `S` is built in the run, on the
+run's own k-bins. `tests/` pins the geometry and the binning to the values
+every result in `docs/STATUS.md` was measured on.
 
 ---
 
 ## Status
 
-`docs/STATUS.md` is the working record: the crop and its justification, the
+`docs/STATUS.md` is the working record: the grid and its justification, the
 k-binning rationale, and the open issues — the inpainting operating ~200x
-outside its design case, the suspected `S` feedback loop, the missing primary
-beam in the simulation, and the light-cone approximation in `box_dims`.
+outside its design case, the suspected `S` feedback loop, and the light-cone
+approximation in `box_dims`. Results recorded before 2026-11 were measured on
+mocks built around the MeerKLASS 2021 footprint and a Legendre projection of
+its foreground; the switch to fully generated mocks is described there.
 
 Read it before trusting a number out of this repository.
 

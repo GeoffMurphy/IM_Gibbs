@@ -1,19 +1,18 @@
 """PCA + transfer function benchmark, on the sampler's own k-bins.
 
-``notebooks/3_pca_transfer_function.ipynb`` measures the PCA benchmark on the
-box-based ``make_kbins`` grid with its own band and mode count, so its ``T(k)``
-cannot be laid on top of a systematics run: different bins, different
-estimator, different field. ``docs/STATUS.md`` records that like-for-like
-comparison as owed. This script is it.
+A PCA benchmark on a different binning, band or mode count cannot be laid on
+top of a systematics run: different bins, different estimator, different
+field. This script is the like-for-like comparison ``docs/STATUS.md``
+records.
 
 Everything is held identical to the Gibbs run being compared against:
 
-* the **same simulated cube** the ``clean`` arm saw -- H I + the 6-mode
-  Legendre projection of the real L2021 foreground + noise, on the real
-  footprint, from the same ``TRUTH_SEED``;
+* the **same simulated cube** the ``clean`` arm saw -- H I + FastBox
+  foreground + noise on the mock footprint (``imgibbs.mock.injection_base``),
+  from the same ``TRUTH_SEED``;
 * the **same footprint-restricted estimator** (mask, mean over valid voxels,
   divide by ``<w^2>``) on the **same five ``kbins_from_crop`` bins**;
-* the **same truth**, ``Fastbox_cube_cropped.npy``.
+* the **same truth**, the H I cube from that call.
 
 Both methods then produce the same quantity -- the fraction of the true H I
 power that survives -- so they can go on one axis.
@@ -35,8 +34,9 @@ is a coherent sum over ``k_par`` at fixed ``k_perp``; the result depends on the
 relative phases across ``k_par``, which a Gaussian mock with the right P(k)
 does not reproduce. ``--injection-tf`` recomputes that comparison.
 
-**One structural caveat.** The simulated foreground is *exactly* rank 6 by
-construction, so any clean with >= 6 modes removes it completely. This flatters
+**One structural caveat.** The simulated foreground is a sum of smooth power
+laws per pixel, inside a 6-mode Legendre span to ~1e-10 K, so any clean with
+enough modes removes it almost completely. This flatters
 PCA relative to real data, where the foreground is only approximately low rank.
 What is measured here is therefore **signal loss, not foreground residual** --
 which is what a transfer function is for, but it is not a claim that PCA cleans
@@ -64,9 +64,9 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from imgibbs import kbins_from_crop, load, load_l2021_cube  # noqa: E402
+from imgibbs import kbins_from_crop  # noqa: E402
+from imgibbs.mock import MOCK_SHAPE, injection_base  # noqa: E402
 
-CROP = (slice(33, 103), slice(14, 59), slice(0, 250))
 N_K_BINS = 5
 T_SYS, DEL_T = 16.0, 1000.0
 DEL_NU = (1712.0 - 856.0) / 4096 * 1e6
@@ -78,11 +78,11 @@ def parse_args():
     p.add_argument('--out', default='outputs/groundspill_run1',
                    help='run directory to read box_dims from and write into')
     p.add_argument('--pca-modes', type=int, default=8,
-                   help='PCA modes removed (notebook 3 uses 8; the sampler '
+                   help='PCA modes removed (default 8; the sampler '
                         'marginalises over 6 Legendre modes)')
     p.add_argument('--n-modes', type=int, default=6,
-                   help='Legendre modes in the simulated foreground, matching '
-                        'the run being compared against')
+                   help='Legendre modes the compared run marginalised over; '
+                        'recorded in the output only')
     p.add_argument('--injection-tf', type=int, default=0, metavar='N',
                    help='also run the on-sky injection estimator with N '
                         'Gaussian mocks, to show how far it lands from the '
@@ -141,18 +141,12 @@ def main():
     box_dims = np.array(meta['box_dims'], float)
     sig_k = np.array(meta['sig_k'], float)
 
-    real = load_l2021_cube()[CROP]
-    shape = real.shape
-    n_freq = shape[2]
-    flag = (real != 0).astype(float)
-    hi = load('Fastbox_cube_cropped.npy')[:, :, :n_freq]
+    shape = tuple(meta.get('cube_shape', MOCK_SHAPE))
+    hi, foreground, flag = injection_base(shape, TRUTH_SEED)
 
-    # The clean arm's cube, rebuilt exactly: same Legendre foreground, same
-    # seed, and -- because the control arm injects no systematic -- the noise
-    # is the first draw off the generator, as it was in the run.
-    leg = np.linalg.qr(np.polynomial.legendre.legvander(
-        np.linspace(-1, 1, n_freq), args.n_modes - 1))[0].T
-    foreground = ((real.reshape(-1, n_freq) @ leg.T) @ leg).reshape(shape)
+    # The clean arm's cube, rebuilt exactly: same foreground, same seed, and
+    # -- because the control arm injects no systematic -- the noise is the
+    # first draw off the generator, as it was in the run.
     rng = np.random.default_rng(TRUTH_SEED)
     noise_rms = np.sqrt(T_SYS ** 2 / (DEL_NU * DEL_T))
     noise = rng.normal(scale=noise_rms, size=shape)
@@ -178,7 +172,7 @@ def main():
         return np.array([p[idxs == i].mean() for i in occupied]) / w2
 
     true_pk = pk(hi)
-    valid = np.all(real != 0, axis=2)
+    valid = np.all(flag != 0, axis=2)
 
     A = pca_projector(cube, args.pca_modes, valid)
     cleaned = apply_projector(cube, A)
@@ -201,7 +195,7 @@ def main():
 
     print(f'grid        : {shape}, {len(sig_k)} bins')
     print(f'PCA modes   : {args.pca_modes}   '
-          f'(foreground is exactly rank {args.n_modes} by construction)')
+          f'(the run marginalised over {args.n_modes})')
 
     print('\n  bin       k      T(k) exact   noise/true   (PCA-noise)/true')
     for i, k in enumerate(sig_k):

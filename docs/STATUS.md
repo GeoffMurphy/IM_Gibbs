@@ -4,14 +4,28 @@ The working record for this repository: what the current configuration is, why
 it is that way, and what is still wrong with it. Read this before trusting a
 number out of here.
 
-Last substantive update: 2026-10-19 (the beam, measured UHF beam, injection test).
+Last substantive update: 2026-11-05 (switched to fully generated mocks).
+
+> **Since 2026-11-05 nothing here reads observational data.** Every notebook,
+> script and test runs on mocks built by `imgibbs.mock` — FastBox H I and
+> foregrounds, the systematics equations, a Gaussian beam, radiometer noise,
+> a parametric drift-scan footprint — and `S` starts at the *expected* H I
+> power on the run's own k-bins. See the changelog entry of that date.
+> Results recorded before it were measured on mocks built around the
+> MeerKLASS 2021 footprint, with the 6-mode Legendre projection of the real
+> sky as the foreground and `S` started at the injected realisation's own
+> power. They stand as findings, but expect the numbers to move in detail if
+> rerun: the FastBox foreground is ~40x the H I rms rather than ~140x, and
+> the footprint and H I realisation differ. References below to
+> `S_starting_point_cropped.npy`, `Fastbox_cube_cropped.npy` and notebooks
+> 1–3 describe that earlier setup; those files are gone.
 
 ---
 
 ## Current configuration
 
 ```python
-CROP     = (slice(33, 103), slice(14, 59), slice(0, 250))   # -> (70, 45, 250)
+SHAPE    = (70, 45, 250)       # imgibbs.mock.MOCK_SHAPE; L-band channels 550-799
 box_dims = (601.10, 386.42, 254.39)                          # Mpc
 n_k_bins = 5           # a CEILING; kbins_from_crop chose 5
 n_modes  = 6           # foreground modes (Legendre)
@@ -22,39 +36,44 @@ T_sys    = 16 K,  del_nu = 0.208984 MHz,  del_t = 1000 s
 - **Voxels** 8.59 x 8.59 x 1.02 Mpc — strongly anisotropic, which is exactly
   why a cubic `box_dims` (the old `(232, 232, 232)`) was wrong: it mismaps every
   mode to the wrong |k| bin.
-- **Modes per bin** `[898, 12474, 106814, 209276, 454834]`, `k` from 0.0447 to
-  3.129 Mpc⁻¹.
+- **Modes per bin** `[934, 13200, 108186, 209190, 452778]` on the mock
+  footprint (`drift_footprint`), `k` from 0.0460 to 3.129 Mpc⁻¹. (On the
+  earlier MeerKLASS-shaped footprint: `[898, 12474, 106814, 209276, 454834]`
+  from 0.0447.)
 - **Units** everything in K, so `S` is in K². `HITracer.signal_amplitude()`
   returns mK — the generation notebook divides by 1000. Getting this wrong
   misscales `S` by 10⁶.
 - **`box_dims` describes the FFT grid** (21.0 x 13.5 deg), *not* the ~200 deg²
   scanned footprint. The footprint mask is handled by the `w` weights.
 
-`tests/test_imgibbs.py` pins the geometry and the binning to the values the
-shipped `S_starting_point_cropped.npy` was generated with, and
-`scripts/run_gibbs.py` refuses to start if the two disagree.
+`tests/test_imgibbs.py` pins the geometry and the binning on the mock
+footprint. `S` is built on the bins each run derives, so it cannot be
+attached to the wrong wavenumbers.
 
 > **Note on an earlier draft of this document.** It quoted the grid as
 > (70, 45, 500) with `box_dims = (558.4, 359.0, 494.7)`. That was the
 > 500-channel configuration; the working grid has been the 250-channel cut
-> since 2026-08-24. The numbers above are read back from
-> `data/S_starting_point_cropped_meta.json`.
+> since 2026-08-24.
 
 ---
 
-## The crop
+## The grid and the footprint
 
-`L2021_polished_cube.npy[33:103, 14:59, :]` is the tight bounding box of the
-drift-scan footprint. It loses **zero** valid voxels (930,938 either way) while
-fill goes 19.2% → 59.1%, at 3.08x fewer voxels.
+The (70, 45) map size was chosen as the tight bounding box of the MeerKLASS
+2021 drift-scan footprint: it lost **zero** observed voxels while fill went
+19.2% → 59.1%, at 3.08x fewer voxels than the full map. The footprint was a
+diagonal band about 30 pixels tall with rounded ends and no per-channel
+flags. The 250 channels are L-band channels 550–799 (the low sub-band of
+Wang et al. 2021), 0.3 deg pixels.
 
-Source: `Nscan961_Tsky_cube_p0.3d_sigma4.0_iter2.fits`, channels 550–1050 (the
-low band of Wang et al. 2021), 0.3 deg pixels.
+The mocks keep the grid and replace the footprint with a parametric band of
+the same kind (`imgibbs.drift_footprint`: tilted, rounded ends, 62.7% fill).
+Its k-bins land within 3% of the real-footprint ones (0.070 / 0.163 / 0.379 /
+0.882 / 2.052 against 0.068 / 0.160 / 0.374 / 0.875 / 2.046 Mpc⁻¹).
 
-The crop is a **fill-fraction decision, not a fastbox one**. Both the full cube
-and the crop are non-cubic. Un-cropping recovers *no* additional sky — both
-contain the same 1865 pixels with data — while tripling the voxel count and
-dropping fill back to 19.2%.
+The crop was a **fill-fraction decision, not a fastbox one**. Both the full
+map and the crop are non-cubic; un-cropping recovers no additional sky while
+tripling the voxel count.
 
 ---
 
@@ -156,7 +175,8 @@ all). Do not treat that curve as a target to match.
 
 The fix is `T_gibbs` vs `T_pca` on a shared injected mock, using
 `data/mock_ref_injection.npy` so both arms and any later session use an
-identical injected signal.
+identical injected signal. (Removed 2026-11-05: on a mock the truth is known,
+and `notebooks/1_end_to_end.ipynb` compares against it directly.)
 
 ---
 
@@ -274,7 +294,7 @@ identical seeds, differing only in whether the block is on.
 ceiling before they start, and warn if the period chosen is one the foreground
 already takes.
 
-`notebooks/4_systematics.ipynb` shows the structure of the block — the
+`notebooks/2_systematics.ipynb` shows the structure of the block — the
 templates, the separability, and what a 6-mode clean leaves behind — without
 running the sampler. It needs only data shipped with the repository.
 
@@ -343,7 +363,7 @@ band, which is one more argument for the 500-channel cut.
 (An earlier draft of this section claimed the power "spreads over a range of k
 and cannot be dealt with by excising one bin". That is what the chirp would do
 given enough bandwidth; it is not what it does here. Measured in
-`notebooks/4_systematics.ipynb` §9.)
+`notebooks/2_systematics.ipynb` §9.)
 
 Spatially it uses a 2D polynomial, not the scan-direction one: leakage follows
 the beam's polarisation response.
@@ -370,11 +390,9 @@ would be wrong.
 ### Running on ilifu
 
 `~/imgibbs-sys` is a clone of this branch; `scripts/submit_systematics.sh`
-submits one arm per job. `data/L2021_polished_cube.npy` is symlinked to the
-copy under `Sampling Nb/` — same file, md5 `204516c8a3a7484e6bbf5c5fc41a401a`.
-The interpreter is `~/ska/.venv` (Python 3.12.13), which already carries
-numpy, scipy, pyccl and tqdm; imgibbs needs nothing else, and fastbox is
-optional since `imgibbs.grid` imports it only to check the cosmology.
+submits one arm per job. The interpreter is `~/ska/.venv` (Python 3.12.13),
+which carries numpy, scipy, pyccl and tqdm. (Since 2026-11-05 the mocks need
+FastBox too; that environment did not have it.)
 
 **Validated against the laptop 2026-09-23**, which is worth doing rather than
 assuming — pyccl 3.3.0/numpy 2.4.2 here against 3.3.6/2.5.3 there:
@@ -438,7 +456,7 @@ control's 10.3% because the contamination pins the chain. Same behaviour as the
 0.77 against the control's 0.59, which invites the reading that the block
 improves recovery there. It does not — that is leftover ripple power partly
 filling the foreground-induced deficit. The ripple residual contributes 0.17x
-the H I power to bin 1 (measured in `notebooks/4_systematics.ipynb`), and
+the H I power to bin 1 (measured in `notebooks/2_systematics.ipynb`), and
 0.59 + 0.17 = 0.76 against the measured 0.77. Bin 1 is contaminated too; it
 just happens to be contaminated in the direction that hides the loss.
 
@@ -624,7 +642,7 @@ order they are worth doing.
   the deflated arm, and the baselines are a 7 h rerun.
 - `pyccl` and `fastbox` are installed *nowhere* reachable, including ilifu.
   `systematics_report.py` and `pca_benchmark.py` are written to work without
-  them; `notebooks/3_pca_transfer_function.ipynb` still needs both.
+  them. (Since 2026-11-05 building any mock needs both.)
 
 ## Open issues
 
@@ -641,7 +659,7 @@ This matters because `Pk_trace` measures the power of the **whole** cube, so it
 is a box average blending observed sky with prior draws. Restricting P(k) to the
 footprint (mask, then normalise by `<w²>`) raises mid-k power by up to **15x** at
 k ≈ 0.09, converging back to ~1 by k ≳ 0.6. The footprint cells in
-`2_gibbs_sampling.ipynb` do this, with a mask-response control built in (mocks
+`2_gibbs_sampling.ipynb` (removed 2026-11-05; in git history) did this, with a mask-response control built in (mocks
 with fluctuations switched off outside the footprint come back at 0.90–1.11, so
 the effect is not mask leakage).
 
@@ -907,7 +925,7 @@ Cosmetic, but they mislead anyone reading a run log:
 - **Both 1/f and leakage contaminate bin 1**, unlike ground spill: `off` reads
   1.29 in bin 1 against the control's 0.59. For 1/f that is expected — it is
   broadband. For leakage it is the chirp's wings, which
-  `notebooks/4_systematics.ipynb` §9 predicted at ~10x the ground-spill level.
+  `notebooks/2_systematics.ipynb` §9 predicted at ~10x the ground-spill level.
   The block removes most of it (1/f 0.60, leakage 0.91).
 - **`--fix-S` chains mix far better.** With `S` held, `tau_int` is 1.0 in every
   bin (ESS 2250) against 6-28 when it is sampled. Sampling `S` is most of the
@@ -1568,7 +1586,7 @@ both are negligible, so the single template was kept.
   same way. Not tested.
 
 **Related but separate work — check before extending this.** Geoff's
-observational run (`Sampling Nb/`, `make_beam_transfer.py`) builds its
+observational analysis (outside this repository) builds its beam
 transfer from the same L-band 1-D profiles, and its transfer table
 matches `build_beam_table.py`'s output to 5e-5, so the two agree. The MSc
 student's beam (added on ilifu since 2026-09-13) is a separate, unsampled
@@ -1598,10 +1616,10 @@ project (UHF, `~/beam_correction/NOTES.md`) shares physics, not code.
 - **Light-cone approximation.** `Lx`/`Ly` use a single `D_M` at the midpoint
   redshift, but 21 deg subtends 465 Mpc at z = 0.32 and 647 Mpc at z = 0.46.
   Fine for a prior; revisit for precision P(k).
-- **`3_pca_transfer_function.ipynb` uses a different grid** — 72 channels and
-  the box-based `make_kbins` — from the other two notebooks. That is deliberate
-  (the published PCA transfer function is calibrated against those bins) but it
-  does mean its k axis is not identical to the sampler's.
+- ~~**`3_pca_transfer_function.ipynb` uses a different grid**~~ — removed
+  2026-11-05. The PCA + transfer-function comparison in
+  `1_end_to_end.ipynb` and `scripts/pca_benchmark.py` both use the sampler's
+  own k-bins.
 
 ### Known landmine
 
@@ -1661,6 +1679,102 @@ runtime at once, and is a much cheaper fix than reworking `S_samp`.
 ---
 
 ## Changelog
+
+### 2026-11-05 — mock data throughout
+
+- **`imgibbs.mock`** builds every term of the data model from public inputs:
+  FastBox H I (`generate_hi_mock`) and foregrounds (`ForegroundModel`:
+  synchrotron + point sources with Santos et al. 2005 angular spectra and a
+  spatially varying power-law index, plus the CMB), ground spill / 1/f /
+  leakage from `imgibbs.systematics`, a Gaussian beam, radiometer noise and a
+  parametric drift-scan footprint. One seed per component, spawned from a
+  master seed; the global NumPy state FastBox uses is saved and restored.
+  The foreground lies inside the 6-mode Legendre span to ~1e-10 K, beamed or
+  not, and is ~40x the H I rms.
+- **`imgibbs.sampler.run_chain`** is the sampling loop lifted out of
+  `run_gibbs.py`. Verified bit for bit against the previous `run_gibbs.py`
+  (P(k), F and g traces and matvec counts, 3 samples each) in three
+  configurations: plain, joint ground spill, and beam + ground spill with the
+  marginal g solve.
+- **`S` now starts at the expected power**, the mean binned power of 8 H I
+  realisations independent of the one in the data (`expected_hi_power`),
+  built on the run's own k-bins (`signal_prior`). It used to be the power of
+  the injected realisation itself, so every chain started at the answer.
+  The expected power is within cosmic variance of the truth (3–8% per bin on
+  this grid), so `--S-start-scale 0.1` / `10` is still the test of whether a
+  bin is constrained.
+- `run_gibbs.py` samples a mock by default (`--mock-*` options; the mock is
+  written to `<out>/mock.npz`), or `--data` for your own cube. The S/grid
+  consistency check is gone with the shipped `S`: `S` is now built on the
+  bins the run derives. `--burn` sets where the saved posterior-mean maps
+  start.
+- The injection scripts (`systematics_injection.py`, `beam_injection.py`,
+  `systematics_report.py`, `pca_benchmark.py`) and `fg_precond_spectrum.py`
+  take their H I, foreground and footprint from `mock.injection_base`.
+- Notebooks: `1_end_to_end.ipynb` (new) runs mock → sampling → results and
+  compares with PCA + transfer function; `4_systematics.ipynb` is now
+  `2_systematics.ipynb`, with its k-bins and H I generated in place. The
+  real-data notebooks 1–3 and every file in `data/` were removed;
+  `load_l2021_cube` and `FOOTPRINT_CROP` are gone from the package.
+- **End-to-end result** (`1_end_to_end.ipynb`, beam 1.5 deg + ground spill in
+  mock and model, marginal g solve, 300 samples, burn 100; 9.5 s/sample on
+  the laptop). Posterior median / true, bins 0–4: **0.78 (+0.10/−0.08),
+  1.08, 0.81 (±0.06)**, then 0.96 and 1.08 in the prior-dominated bins 3–4.
+  Ripple amplitudes recovered to 0.1% (pulls < 1.6). `<s>` correlates 0.48
+  with the beamed H I. PCA + injection T(k) on the same data: 1.14, 1.17,
+  0.25 (bin 2 noise-dominated after the beam correction). **Not converged:**
+  tau 5–15 in bins 0–2 (a lower bound on 200 draws; bin 2 drifts 1.0 → 0.75
+  → 0.85 across the chain), so bins 0 and 2 at ~0.8 are not yet a finding.
+- **Start-scale test, same configuration, 2000 samples, burn 300** (ilifu,
+  seed 1, `S` started at 0.1x / 1x / 10x the expected power). Bins 0–2 reach
+  the same posterior from all three starts (median ratio x10/x0.1: 1.003,
+  1.000, 1.000; the 0.1x and 10x traces first cross at samples 41, 279 and
+  958). Bins 3–4 stay where they start (ratio 4.3 and 22), as the Fisher
+  forecast said. Posterior / true, bins 0–2: **0.86 (0.75–0.98), 1.08
+  (1.01–1.17), 0.82 (0.76–0.88)**; tau 40 / 32 / 22, ESS 43 / 54 / 78.
+- **Bin 2's 0.82 is the truth being anisotropic, not the sampler.** With a
+  beam, `S` is drawn from the beam-visible modes (low `k_perp`, so high
+  `k_par`). FastBox's H I is not isotropic within a bin: RSD and the
+  `sigma_nl` damping depend on `mu`, and in bin 2 the visible modes carry
+  **0.774x** the bin-average power (0.76 ± 0.03 over six other
+  realisations; bin 1 1.01, bin 3 0.82). Against that, bin 2 recovers
+  **1.06**. Bin 0 has every mode visible, so its 0.86 stands (1.3 sigma
+  low, ESS 43). The end-to-end notebook now plots both truths. Comparing
+  the two is a test of the mock's isotropy, not of the method. On the sky
+  the same applies: a beamed, collapsed `S` step measures the power of the
+  modes the beam leaves, which in a bin with anisotropic power is not the
+  bin average.
+- **All three systematics at once.** `make_mock(systematic='all')` sums
+  ground spill, 1/f and leakage, each from its own random stream;
+  `imgibbs.CompositeBasis` stacks their template blocks into one `g`
+  (`run_gibbs.py --groundspill --onef --leakage`). The model's 1/f block is
+  deflated against the foreground span; the injected 1/f is not.
+  - **Ground spill and leakage are degenerate on this band**: overlap
+    (largest principal-angle cosine over the footprint) 0.993. At RM 1000
+    the leakage completes 3.0 cycles over 971–1023 MHz, the 17.5 MHz ripple
+    2.97, and their spatial templates share the constant and a gradient. The
+    data fix the sum; the prior splits it. The deflated 1/f overlaps each at
+    ~0.74. The injected 1/f is 99% inside the foreground span (1 mK rms,
+    0.011 mK after a 6-mode smooth fit).
+  - End-to-end notebook, beam + all three in mock and model, 300 samples,
+    burn 100: **35 s/sample** (median 88 matvecs, against 32 with ground
+    spill alone). Systematics recovered to 6% rms (0.09 of 1.49 mK, smooth
+    part removed); ground spill + leakage sum to 8%. Posterior / true, bins
+    0–2: 1.40 (+1.09/−0.26), 1.06, 0.82 (1.40, 1.05, 1.05 against the
+    visible-mode truth). **Bin 0 starts at ~4x and takes ~180 samples to come
+    down**, so burn 100 leaves part of the descent in (tau 25, ESS 8). The
+    likely mechanism is the 0.7% of the leakage the ripple does not span:
+    it sits at bin 0's `k_par`, is held only by the 10 mK prior, and trades
+    against the signal there (cf. "The `S` step steals from `g`").
+    Modelling ground spill alone on the same mock puts bin 0 at 33x after 25
+    samples.
+  - Start-scale chains (0.1x / 1x / 10x, 2000 samples) for this
+    configuration are running on ilifu.
+- Which bins the data can constrain is now estimated per run: a Fisher
+  forecast `sigma_P/P` from the per-mode data-to-prior ratio
+  `q = <w> |B|^2 P / N`. With the 1.5 deg beam it gives 0.13 / 0.11 / 0.10 /
+  0.20 / 1.04, reproducing the split the start-scale test found (bins 0–2
+  constrained, 3–4 prior); the notebook greys out bins above 0.15.
 
 ### 2026-09-24 — deflation confirmed, and the PCA comparison settled
 
